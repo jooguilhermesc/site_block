@@ -53,6 +53,15 @@ Se o comando `python` não for encontrado, use `py siteblock.py install`.
 
 Abra o terminal como administrador **a partir da sua própria conta do Windows**. A interface fica ligada à conta que fez a instalação.
 
+**Firefox no Windows.** Por conta própria, o Firefox escapa do bloqueio no Windows: ele pode usar DNS seguro, guarda os endereços em cache e mantém conexões por QUIC e IPv6, que o Windows não deixa derrubar. Por isso, a instalação configura o Firefox por política do sistema:
+
+- desliga o DNS seguro;
+- desliga o HTTP/3;
+- faz o Firefox usar só IPv4;
+- desliga o cache de DNS próprio dele.
+
+Essas opções ficam travadas: aparecem em cinza nas configurações, e `about:policies` lista as políticas ativas. Feche e abra o Firefox depois de instalar. O `uninstall` remove tudo isso. No Chrome e no Edge o bloqueio já funciona sem nada disso.
+
 ### Depois de instalar
 
 Abra `http://127.0.0.1:8377` ou procure **Siteblock** no menu de aplicativos (Linux) ou no menu Iniciar (Windows). Os serviços iniciam sozinhos com o PC. No Windows, o comando `siteblock` passa a funcionar nos terminais abertos depois da instalação.
@@ -103,7 +112,7 @@ Windows, em um terminal aberto como administrador:
 siteblock uninstall
 ```
 
-Isso remove os serviços, o atalho, o comando `siteblock`, a extensão e o bloco do Siteblock no hosts. Remova também a extensão na página de extensões do navegador. A lista e uma cópia do hosts original continuam no sistema:
+Isso remove os serviços, o atalho, o comando `siteblock`, a extensão, o bloco do Siteblock no hosts e, no Windows, as políticas do Firefox. Remova também a extensão na página de extensões do navegador. A lista e uma cópia do hosts original continuam no sistema:
 
 | Sistema | Lista | Cópia do hosts |
 |---|---|---|
@@ -172,7 +181,7 @@ A configuração fica em `config.json`, na pasta da lista (tabela em [Desinstala
 - **Sites no mesmo servidor**: ao derrubar conexões, outro site que use o mesmo IP perde a conexão por um instante e reconecta sozinho. Uma chamada de vídeo nesse servidor pode cair brevemente.
 - **Conexões já abertas no Windows**: o Windows só permite derrubar conexões TCP por IPv4. Conexões por IPv6 ou QUIC já abertas continuam até o navegador reconectar; com a extensão, a aba vai para a página de bloqueio do mesmo jeito.
 - **Antivírus no Windows**: alguns antivírus vigiam o hosts e podem bloquear a gravação ou avisar que ele foi alterado. Se o bloqueio não for aplicado, veja o log do enforcer (em [Problemas](#problemas)).
-- **DNS seguro (DoH)**: se o navegador usar DNS seguro, ele pode ignorar o hosts. O Firefox costuma exigir atenção; o bloqueio imediato foi testado só no Chromium.
+- **DNS seguro (DoH)**: se o navegador usar DNS seguro, ele pode ignorar o hosts. No Windows, a instalação já desliga o DNS seguro do Firefox; no Linux, desligue à mão nas configurações do navegador se o bloqueio não pegar.
 - **Autocontrole, não cadeado**: a lista é editável pelo seu usuário sem administrador. Mudar a agenda ou remover e adicionar o site de novo contorna a espera entre liberações. Serve para segurar o impulso, não para impedir quem quer burlar.
 - **Extensão**: só funciona no Chrome, no Chromium e no Edge, e só no navegador onde estiver carregada. Em outros navegadores o bloqueio funciona igual, mas aparece a tela de erro comum.
 

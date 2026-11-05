@@ -1710,6 +1710,54 @@ def windows_path_entry(add: bool) -> None:
     ctypes.windll.user32.SendMessageTimeoutW(0xFFFF, 0x001A, 0, "Environment", 0x0002, 5000, ctypes.byref(ctypes.c_size_t()))
 
 
+FIREFOX_POLICY_KEY = r"SOFTWARE\Policies\Mozilla\Firefox"
+# O Firefox resolve nomes e mantém conexões por conta própria, o que no Windows escapa do bloqueio:
+FIREFOX_PREFS = {
+    "network.http.http3.enable": False,  # QUIC (UDP): o Windows não deixa derrubar
+    "network.dns.disableIPv6": True,  # o Windows só deixa derrubar conexões IPv4
+    "network.dnsCacheExpiration": 0,  # sem cache próprio: ao reconectar, ele consulta o hosts de novo
+    "network.dnsCacheExpirationGracePeriod": 0,
+}
+
+
+def firefox_policies(enable: bool) -> None:
+    """Liga ou desliga as políticas do Firefox que fazem ele respeitar o bloqueio.
+
+    O DNS seguro (DoH) é desligado porque, com ele, o Firefox ignora o hosts. As políticas ficam
+    travadas para valer mesmo que a opção tenha sido ligada à mão; o uninstall as remove.
+    """
+    import winreg
+
+    access = winreg.KEY_READ | winreg.KEY_WRITE | winreg.KEY_WOW64_64KEY
+    with winreg.CreateKeyEx(winreg.HKEY_LOCAL_MACHINE, FIREFOX_POLICY_KEY, 0, access) as key:
+        if enable:
+            with winreg.CreateKeyEx(key, "DNSOverHTTPS", 0, access) as doh:
+                winreg.SetValueEx(doh, "Enabled", 0, winreg.REG_DWORD, 0)
+                winreg.SetValueEx(doh, "Locked", 0, winreg.REG_DWORD, 1)
+        else:
+            with contextlib.suppress(OSError):
+                winreg.DeleteKeyEx(key, "DNSOverHTTPS", winreg.KEY_WOW64_64KEY, 0)
+
+        # "Preferences" pode ter preferências de outras políticas: só mexe nas do Siteblock.
+        try:
+            raw, _ = winreg.QueryValueEx(key, "Preferences")
+            prefs = json.loads("\n".join(raw) if isinstance(raw, list) else raw)
+        except (OSError, ValueError):
+            prefs = {}
+        if not isinstance(prefs, dict):
+            prefs = {}
+        for name, value in FIREFOX_PREFS.items():
+            if enable:
+                prefs[name] = {"Value": value, "Status": "locked"}
+            else:
+                prefs.pop(name, None)
+        if prefs:
+            winreg.SetValueEx(key, "Preferences", 0, winreg.REG_MULTI_SZ, [json.dumps(prefs)])
+        else:
+            with contextlib.suppress(OSError):
+                winreg.DeleteValue(key, "Preferences")
+
+
 def install_windows() -> None:
     require_root()
     user = windows_user()
@@ -1744,6 +1792,7 @@ def install_windows() -> None:
     SHORTCUT_PATH.parent.mkdir(parents=True, exist_ok=True)
     SHORTCUT_PATH.write_text(f"[InternetShortcut]\r\nURL=http://127.0.0.1:{PORT}/\r\n", encoding="ascii")
     windows_path_entry(add=True)
+    firefox_policies(enable=True)
 
     register_task(ENFORCER_NAME, task_xml(
         "Siteblock: aplica a agenda no arquivo hosts", pythonw, f'"{BIN_PATH}" enforce', None))
@@ -1752,7 +1801,8 @@ def install_windows() -> None:
         schtasks("/Run", "/TN", name)
 
     print(f"Pronto. Abra http://127.0.0.1:{PORT} ou procure Siteblock no menu Iniciar.")
-    print("Para usar o comando siteblock, abra um terminal novo.\n")
+    print("Para usar o comando siteblock, abra um terminal novo.")
+    print("Se o Firefox estiver aberto, feche e abra de novo para ele respeitar o bloqueio.\n")
     print(EXTENSION_HELP.format(path=EXTENSION_DIR))
 
 
@@ -1763,6 +1813,7 @@ def uninstall_windows() -> None:
         schtasks("/Delete", "/TN", name, "/F", check=False)
     remove_hosts_block()
     windows_path_entry(add=False)
+    firefox_policies(enable=False)
     SHORTCUT_PATH.unlink(missing_ok=True)
     shutil.rmtree(APP_DIR, ignore_errors=True)
     print(f"Removido. Sua lista continua em {CONFIG_DIR} e o hosts original em {HOSTS_BACKUP}.")
