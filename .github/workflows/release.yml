@@ -1,0 +1,44 @@
+# Gera o Siteblock-Instalador.exe e publica numa release do GitHub.
+#
+# Para publicar uma versão, crie e envie uma tag no formato v1.2.3:
+#   git tag v1.2.3
+#   git push origin v1.2.3
+#
+# Rodando à mão (aba Actions > Release > Run workflow), só gera o instalador, sem publicar:
+# ele fica nos artefatos da execução, para teste.
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+jobs:
+  windows-installer:
+    name: Instalador do Windows
+    runs-on: windows-latest
+    permissions:
+      contents: write  # para criar a release
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Confere o siteblock.py
+        run: python -m py_compile siteblock.py
+
+      - name: Gera o instalador
+        shell: powershell
+        run: |
+          $version = if ($env:GITHUB_REF_TYPE -eq "tag") { $env:GITHUB_REF_NAME -replace "^v", "" } else { "0.0.0" }
+          ./windows-installer/build.ps1 -Version $version
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: Siteblock-Instalador
+          path: dist/Siteblock-Instalador.exe
+          if-no-files-found: error
+
+      - name: Publica a release
+        if: github.ref_type == 'tag'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create $env:GITHUB_REF_NAME dist/Siteblock-Instalador.exe --title "Siteblock $env:GITHUB_REF_NAME" --generate-notes --verify-tag

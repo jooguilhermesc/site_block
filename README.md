@@ -42,7 +42,11 @@ sudo python3 siteblock.py install
 
 ### Windows
 
-**Pelo assistente.** Dê um duplo clique em `instalar.cmd`, na pasta `windows-installer`. Ele procura o `siteblock.py` na própria pasta e na pasta de cima.
+**Pelo instalador.** Baixe o [Siteblock-Instalador.exe](https://github.com/jooguilhermesc/site_block/releases/latest/download/Siteblock-Instalador.exe), da [última versão publicada](https://github.com/jooguilhermesc/site_block/releases/latest), e dê um duplo clique. Não precisa baixar mais nada: ele já traz o `siteblock.py`, o `instalar.cmd` e o logo, e abre o assistente descrito logo abaixo.
+
+O arquivo não tem assinatura digital, então o Windows pode mostrar o aviso **O Windows protegeu o computador**. Clique em **Mais informações** e em **Executar assim mesmo**.
+
+**Pelo assistente, a partir dos arquivos do projeto.** Dê um duplo clique em `instalar.cmd`, na pasta `windows-installer`. Ele procura o `siteblock.py` na própria pasta e na pasta de cima.
 
 1. A janela do assistente mostra o que vai ser feito. Clique em **Instalar**.
 2. O Windows pede a permissão de administrador. Confirme.
@@ -54,7 +58,7 @@ Ao terminar, o assistente mostra os próximos passos. **Abrir o Siteblock** abre
 
 <img src="docs/prints/assistente-concluido.png" alt="Assistente de instalação: a página final avisa que o Siteblock está instalado e lista os próximos passos" width="520">
 
-Antes de abrir a janela, o `instalar.cmd` verifica se o computador tem um Python que sirva. Se não tiver, ele pergunta se pode instalar. Com um **Sim**:
+Antes de abrir a janela, o `instalar.cmd` (aberto por você ou pelo instalador) verifica se o computador tem um Python que sirva. Se não tiver, ele pergunta se pode instalar. Com um **Sim**:
 
 - baixa o instalador do Python de python.org (cerca de 35 MB);
 - confere se o arquivo está assinado pela Python Software Foundation, e só então o executa;
@@ -128,7 +132,7 @@ Para gravar a extensão em outra pasta: `siteblock extension ~/siteblock-extensa
 
 ### Atualizar
 
-Baixe o `siteblock.py` novo e instale de novo do mesmo jeito: pelo assistente ou pelo comando de instalação, como administrador. Sua lista e seus horários são mantidos.
+Baixe o `siteblock.py` novo (no Windows, pode ser o `Siteblock-Instalador.exe` novo) e instale de novo do mesmo jeito: pelo instalador, pelo assistente ou pelo comando de instalação, como administrador. Sua lista e seus horários são mantidos.
 
 ### Desinstalar
 
@@ -306,6 +310,25 @@ A janela mostra o que a instalação ou a desinstalação informou. O mesmo text
 | `SITEBLOCK_DIR` | `/var/lib/siteblock` | `C:\ProgramData\Siteblock` |
 | `SITEBLOCK_HOSTS` | `/etc/hosts` | `C:\Windows\System32\drivers\etc\hosts` |
 | `SITEBLOCK_PORT` | `8377` | `8377` |
+
+## Publicar uma versão
+
+O `Siteblock-Instalador.exe` é gerado pelo GitHub Actions, em [release.yml](.github/workflows/release.yml). Para publicar uma versão, crie e envie uma tag no formato `v1.2.3`:
+
+```bash
+git tag v1.2.3
+git push origin v1.2.3
+```
+
+O workflow gera o instalador com essa versão e cria a release com o arquivo anexado e as notas montadas a partir dos commits. Rodando o workflow à mão, pela aba **Actions**, ele só gera o instalador e o deixa nos artefatos da execução, sem publicar nada.
+
+Para gerar o instalador no seu Windows, sem instalar nada além do que o sistema já tem:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File windows-installer\build.ps1 -Version 1.2.3
+```
+
+O arquivo sai em `dist\Siteblock-Instalador.exe`. Ele é o [launcher.cs](windows-installer/launcher.cs) com o `siteblock.py`, o `instalar.cmd` e o logo embutidos: ao abrir, grava os três em `%TEMP%\Siteblock-instalador` e roda o `instalar.cmd`.
 
 ## Alternativas
 
