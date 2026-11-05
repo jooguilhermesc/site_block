@@ -338,3 +338,7 @@ Se preferir algo pronto (informações das páginas dos projetos, não testadas 
 - **WebTimeout**: extensão do Firefox com agenda por dia e horário.
 - **Censor**: bloqueia no sistema todo por dia e horário, sem liberação temporária.
 - **Open Turkey**: feito para ser difícil de burlar. Linha de comando com systemd.
+
+## Licença
+
+Distribuído sob a [licença MIT](LICENSE).
