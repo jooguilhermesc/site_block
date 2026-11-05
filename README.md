@@ -1,8 +1,8 @@
 # Siteblock
 
-Bloqueia sites no Linux pelo `/etc/hosts`, com agenda por dia da semana e liberação temporária de 1 a 15 minutos. Tudo roda localmente: uma interface no navegador (`http://127.0.0.1:8377`) e um comando `siteblock` no terminal.
+Bloqueia sites no Linux e no Windows pelo arquivo hosts do sistema, com agenda por dia da semana e liberação temporária de 1 a 15 minutos. Tudo roda localmente: uma interface no navegador (`http://127.0.0.1:8377`) e um comando `siteblock` no terminal.
 
-É um arquivo só, [siteblock.py](siteblock.py), sem dependências além do Python. O logo, [logo-block-site.jpg](logo-block-site.jpg), é opcional: se estiver na mesma pasta na hora da instalação, vira o ícone da aba e do atalho no menu.
+É um arquivo só, [siteblock.py](siteblock.py), sem dependências além do Python. O mesmo arquivo serve para os dois sistemas: ele reconhece onde está rodando e usa o mecanismo certo para bloquear. O logo, [logo-block-site.jpg](logo-block-site.jpg), é opcional: se estiver na mesma pasta na hora da instalação, vira o ícone da aba (e, no Linux, do atalho no menu).
 
 ## O que ele faz
 
@@ -15,54 +15,104 @@ Bloqueia sites no Linux pelo `/etc/hosts`, com agenda por dia da semana e libera
 
 ## Requisitos
 
-- Linux com systemd
+**Linux**
+
+- Distro com systemd
 - Python 3.10 ou mais novo
 - `ss` (pacote `iproute2`, já vem na maioria das distros)
 
+**Windows**
+
+- Windows 10 ou 11
+- Python 3.10 ou mais novo, baixado de [python.org](https://www.python.org/downloads/). O Python da Microsoft Store não serve, porque as tarefas do Windows não conseguem usá-lo. No instalador, marque **Add python.exe to PATH** e, de preferência, **Install for all users**.
+
 ## Instalação
 
-Na pasta onde está o `siteblock.py`, a partir do seu usuário (não como root):
+A instalação mexe no arquivo hosts e cria serviços que iniciam com o PC, então **o comando precisa rodar com permissão de administrador**. Sem isso, ele para e avisa.
+
+### Linux
+
+No terminal, na pasta onde está o `siteblock.py`, a partir do seu usuário (não logado como root), use `sudo`:
 
 ```bash
 sudo python3 siteblock.py install
 ```
 
-Depois abra `http://127.0.0.1:8377` ou procure **Siteblock** no menu de aplicativos. Os serviços iniciam sozinhos com o PC.
+### Windows
+
+1. Abra o menu Iniciar e digite **Terminal** (ou **PowerShell**).
+2. Clique com o botão direito e escolha **Executar como administrador**. Confirme o aviso do Windows.
+3. Vá até a pasta onde está o `siteblock.py` e rode a instalação:
+
+```powershell
+cd C:\caminho\da\pasta
+python siteblock.py install
+```
+
+Se o comando `python` não for encontrado, use `py siteblock.py install`.
+
+Abra o terminal como administrador **a partir da sua própria conta do Windows**. A interface fica ligada à conta que fez a instalação.
+
+### Depois de instalar
+
+Abra `http://127.0.0.1:8377` ou procure **Siteblock** no menu de aplicativos (Linux) ou no menu Iniciar (Windows). Os serviços iniciam sozinhos com o PC. No Windows, o comando `siteblock` passa a funcionar nos terminais abertos depois da instalação.
 
 ### Extensão do navegador
 
-O `/etc/hosts` bloqueia antes de o navegador chegar a qualquer página, então só uma extensão consegue mostrar o timer. A instalação grava a extensão em `/usr/local/share/siteblock/extensao`. Para carregar no Chrome ou Chromium:
+O hosts bloqueia antes de o navegador chegar a qualquer página, então só uma extensão consegue mostrar o timer. A instalação grava a extensão em:
 
-1. Abra `chrome://extensions`.
-2. Ligue o **Modo do desenvolvedor**, no canto superior direito.
-3. Clique em **Carregar sem compactação** e escolha `/usr/local/share/siteblock/extensao`.
+| Sistema | Pasta |
+|---|---|
+| Linux | `/usr/local/share/siteblock/extensao` |
+| Windows | `C:\Program Files\Siteblock\extensao` |
+
+Para carregar no Chrome, Chromium ou Edge:
+
+1. Abra `chrome://extensions` (no Edge, `edge://extensions`).
+2. Ligue o **Modo do desenvolvedor**.
+3. Clique em **Carregar sem compactação** e escolha a pasta da tabela acima.
 
 Com ela, em um site da lista:
 
 - **Liberado, com bloqueio marcado para daqui a até 1 hora**: aparece uma janelinha no canto inferior direito com o tempo restante. Ela fica vermelha no último minuto e um clique a deixa menor. Quando o tempo acaba, a aba vai para a página de bloqueio.
 - **Bloqueado**: em vez do erro do navegador, aparece uma página com o motivo e, se houver espera, em quanto tempo o site pode ser liberado de novo. Quando o site é liberado, a página volta sozinha para o endereço que você tentou abrir.
 
-A extensão só lê o estado em `127.0.0.1:8377`; ela não libera nem bloqueia nada. O bloqueio continua no hosts, com ou sem ela. Ao atualizar o Siteblock, clique no botão de recarregar no cartão da extensão em `chrome://extensions`.
+A extensão só lê o estado em `127.0.0.1:8377`; ela não libera nem bloqueia nada. O bloqueio continua no hosts, com ou sem ela. Ao atualizar o Siteblock, clique no botão de recarregar no cartão da extensão.
 
 Para gravar a extensão em outra pasta: `siteblock extension ~/siteblock-extensao`.
 
-> **Antes de usar:** apague do `/etc/hosts` as linhas de bloqueio que você colocou à mão. Enquanto elas estiverem lá, o site continua bloqueado mesmo quando a agenda libera. A interface avisa quando encontra esse conflito.
+> **Antes de usar:** apague do hosts as linhas de bloqueio que você colocou à mão (`/etc/hosts` no Linux, `C:\Windows\System32\drivers\etc\hosts` no Windows). Enquanto elas estiverem lá, o site continua bloqueado mesmo quando a agenda libera. A interface avisa quando encontra esse conflito.
 
 ### Atualizar
 
-Baixe o `siteblock.py` novo e rode o mesmo comando de instalação. Sua lista e seus horários são mantidos.
+Baixe o `siteblock.py` novo e rode o mesmo comando de instalação, também como administrador. Sua lista e seus horários são mantidos.
 
 ### Desinstalar
+
+Também precisa de administrador.
+
+Linux:
 
 ```bash
 sudo siteblock uninstall
 ```
 
-Isso remove os serviços, o atalho, a extensão em `/usr/local/share/siteblock` e o bloco do Siteblock no `/etc/hosts`. Remova também a extensão em `chrome://extensions`. A lista continua em `/var/lib/siteblock/` e uma cópia do hosts original fica em `/etc/hosts.siteblock.bak`.
+Windows, em um terminal aberto como administrador:
+
+```powershell
+siteblock uninstall
+```
+
+Isso remove os serviços, o atalho, o comando `siteblock`, a extensão e o bloco do Siteblock no hosts. Remova também a extensão na página de extensões do navegador. A lista e uma cópia do hosts original continuam no sistema:
+
+| Sistema | Lista | Cópia do hosts |
+|---|---|---|
+| Linux | `/var/lib/siteblock/` | `/etc/hosts.siteblock.bak` |
+| Windows | `C:\ProgramData\Siteblock\` | `C:\Windows\System32\drivers\etc\hosts.siteblock.bak` |
 
 ## Uso pelo terminal
 
-Tudo o que a interface faz também está disponível na linha de comando. Nenhum destes comandos precisa de `sudo`.
+Tudo o que a interface faz também está disponível na linha de comando. Nenhum destes comandos precisa de `sudo` nem de terminal como administrador.
 
 ```bash
 siteblock list                      # mostra cada site e o estado atual
@@ -96,14 +146,16 @@ siteblock schedule instagram.com qua=tudo
 
 ## Como funciona
 
-São dois serviços systemd, separados de propósito:
+São dois processos, separados de propósito. No Linux são serviços do systemd; no Windows, tarefas do Agendador de Tarefas com os mesmos nomes.
 
-| Serviço | Roda como | O que faz |
+| Processo | Roda como | O que faz |
 |---|---|---|
-| `siteblock-enforcer` | root | A cada 2 segundos lê a agenda e reescreve o bloco do Siteblock no `/etc/hosts`. Quando um site passa a ficar bloqueado, derruba as conexões abertas com ele (`ss -K`). Não abre nenhuma porta. |
+| `siteblock-enforcer` | root (Linux) / SYSTEM (Windows) | A cada 2 segundos lê a agenda e reescreve o bloco do Siteblock no hosts. Quando um site passa a ficar bloqueado, derruba as conexões abertas com ele (`ss -K` no Linux, `SetTcpEntry` no Windows). Não abre nenhuma porta. |
 | `siteblock-ui` | seu usuário | Serve a interface em `127.0.0.1:8377`. Só edita o arquivo de configuração e nunca toca no hosts. |
 
-O Siteblock só mexe no trecho entre estas marcas do `/etc/hosts`; o resto do arquivo fica como está:
+No Windows, o enforcer inicia com o PC e a interface quando você entra na sua conta. Se alguma das duas parar, o Agendador a abre de novo em até 5 minutos.
+
+O Siteblock só mexe no trecho entre estas marcas do hosts; o resto do arquivo fica como está:
 
 ```
 # >>> siteblock (gerenciado automaticamente, não edite este bloco)
@@ -111,43 +163,56 @@ O Siteblock só mexe no trecho entre estas marcas do `/etc/hosts`; o resto do ar
 # <<< siteblock
 ```
 
-A configuração fica em `/var/lib/siteblock/config.json`. Se ela estiver inválida, o enforcer mantém o hosts como está, em vez de liberar tudo.
+A configuração fica em `config.json`, na pasta da lista (tabela em [Desinstalar](#desinstalar)). Se ela estiver inválida, o enforcer mantém o hosts como está, em vez de liberar tudo.
 
 ## Limitações
 
 - **Subdomínios**: bloqueia o domínio, `www.` e `m.`. Outros subdomínios, como `music.youtube.com`, precisam ser adicionados à parte, porque o hosts não aceita curinga.
 - **Conteúdo de outros domínios**: só caem as conexões com o domínio listado. Um vídeo já aberto que vem de uma CDN pode continuar tocando até você bloquear esse domínio também.
 - **Sites no mesmo servidor**: ao derrubar conexões, outro site que use o mesmo IP perde a conexão por um instante e reconecta sozinho. Uma chamada de vídeo nesse servidor pode cair brevemente.
-- **DNS seguro (DoH)**: se o navegador usar DNS seguro, ele pode ignorar o `/etc/hosts`. O Firefox costuma exigir atenção; o bloqueio imediato foi testado só no Chromium.
-- **Autocontrole, não cadeado**: a lista é editável pelo seu usuário sem `sudo`. Mudar a agenda ou remover e adicionar o site de novo contorna a espera entre liberações. Serve para segurar o impulso, não para impedir quem quer burlar.
-- **Extensão**: só funciona no Chrome e no Chromium, e só no navegador onde estiver carregada. Em outros navegadores o bloqueio funciona igual, mas aparece a tela de erro comum.
+- **Conexões já abertas no Windows**: o Windows só permite derrubar conexões TCP por IPv4. Conexões por IPv6 ou QUIC já abertas continuam até o navegador reconectar; com a extensão, a aba vai para a página de bloqueio do mesmo jeito.
+- **Antivírus no Windows**: alguns antivírus vigiam o hosts e podem bloquear a gravação ou avisar que ele foi alterado. Se o bloqueio não for aplicado, veja o log do enforcer (em [Problemas](#problemas)).
+- **DNS seguro (DoH)**: se o navegador usar DNS seguro, ele pode ignorar o hosts. O Firefox costuma exigir atenção; o bloqueio imediato foi testado só no Chromium.
+- **Autocontrole, não cadeado**: a lista é editável pelo seu usuário sem administrador. Mudar a agenda ou remover e adicionar o site de novo contorna a espera entre liberações. Serve para segurar o impulso, não para impedir quem quer burlar.
+- **Extensão**: só funciona no Chrome, no Chromium e no Edge, e só no navegador onde estiver carregada. Em outros navegadores o bloqueio funciona igual, mas aparece a tela de erro comum.
 
 ## Problemas
 
 **O site continua abrindo depois de bloqueado.**
-Veja o log do enforcer, que registra quando não consegue derrubar uma conexão:
+Veja o log do enforcer, que registra quando não consegue gravar o hosts ou derrubar uma conexão:
 
 ```bash
-journalctl -u siteblock-enforcer -n 20
+journalctl -u siteblock-enforcer -n 20                          # Linux
+Get-Content "C:\Program Files\Siteblock\enforcer.log" -Tail 20  # Windows (PowerShell)
 ```
 
-Confira também se não sobrou uma linha manual no `/etc/hosts` ou se o navegador está usando DNS seguro.
+Confira também se não sobrou uma linha manual no hosts ou se o navegador está usando DNS seguro.
 
 **A interface não abre.**
 
+Linux:
+
 ```bash
 systemctl status siteblock-ui
+```
+
+Windows: veja se as tarefas estão rodando e, se não estiverem, inicie-as num terminal como administrador. Os erros da interface ficam em `C:\ProgramData\Siteblock\interface.log`.
+
+```powershell
+schtasks /Query /TN siteblock-ui
+schtasks /Run /TN siteblock-ui
+schtasks /Run /TN siteblock-enforcer
 ```
 
 ## Variáveis de ambiente
 
 Úteis para testes, sem precisar mexer no sistema real:
 
-| Variável | Padrão |
-|---|---|
-| `SITEBLOCK_DIR` | `/var/lib/siteblock` |
-| `SITEBLOCK_HOSTS` | `/etc/hosts` |
-| `SITEBLOCK_PORT` | `8377` |
+| Variável | Padrão no Linux | Padrão no Windows |
+|---|---|---|
+| `SITEBLOCK_DIR` | `/var/lib/siteblock` | `C:\ProgramData\Siteblock` |
+| `SITEBLOCK_HOSTS` | `/etc/hosts` | `C:\Windows\System32\drivers\etc\hosts` |
+| `SITEBLOCK_PORT` | `8377` | `8377` |
 
 ## Alternativas
 

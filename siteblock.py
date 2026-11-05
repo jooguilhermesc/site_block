@@ -1,22 +1,22 @@
 #!/usr/bin/env python3
-"""Siteblock: bloqueia sites no /etc/hosts com agenda semanal e liberação temporária.
+"""Siteblock: bloqueia sites pelo arquivo hosts com agenda semanal e liberação temporária.
 
-Dois processos, de propósito:
-  enforce  roda como root, não abre porta nenhuma e só aplica a agenda no /etc/hosts.
+Funciona no Linux (systemd) e no Windows (Agendador de Tarefas). Dois processos, de propósito:
+  enforce  roda como root/SYSTEM, não abre porta nenhuma e só aplica a agenda no hosts.
   serve    roda como seu usuário e oferece a interface em http://127.0.0.1:8377.
 
-Instalação:  sudo python3 siteblock.py install
-Remoção:     sudo siteblock uninstall
+Instalação:  sudo python3 siteblock.py install       (Linux)
+             python siteblock.py install             (Windows, terminal como administrador)
+Remoção:     sudo siteblock uninstall / siteblock uninstall (terminal como administrador)
 """
 from __future__ import annotations
 
 import argparse
 import contextlib
-import fcntl
+import html
 import ipaddress
 import json
 import os
-import pwd
 import re
 import shutil
 import socket
@@ -29,21 +29,49 @@ from datetime import datetime, timedelta
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-CONFIG_DIR = Path(os.environ.get("SITEBLOCK_DIR", "/var/lib/siteblock"))
-HOSTS_PATH = Path(os.environ.get("SITEBLOCK_HOSTS", "/etc/hosts"))
+WINDOWS = os.name == "nt"
+if WINDOWS:
+    import msvcrt
+else:
+    import fcntl
+    import pwd
+
+ENFORCER_NAME = "siteblock-enforcer"
+UI_NAME = "siteblock-ui"
+LOGO_NAME = "logo-block-site.jpg"
+
+if WINDOWS:
+    SYSTEM32 = Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System32"
+    PROGRAM_DATA = Path(os.environ.get("ProgramData", r"C:\ProgramData"))
+    DEFAULT_CONFIG_DIR = PROGRAM_DATA / "Siteblock"
+    DEFAULT_HOSTS = SYSTEM32 / "drivers" / "etc" / "hosts"
+    APP_DIR = Path(os.environ.get("ProgramFiles", r"C:\Program Files")) / "Siteblock"
+    BIN_PATH = APP_DIR / "siteblock.py"
+    CMD_PATH = APP_DIR / "siteblock.cmd"  # o comando "siteblock" no terminal
+    SHARE_DIR = APP_DIR
+    SHORTCUT_PATH = PROGRAM_DATA / "Microsoft" / "Windows" / "Start Menu" / "Programs" / "Siteblock.url"
+    # O log do enforcer fica onde só o administrador escreve: ele roda como SYSTEM.
+    ENFORCER_LOG = APP_DIR / "enforcer.log"
+    RESTART_HINT = f"Em um terminal aberto como administrador, rode: schtasks /Run /TN {ENFORCER_NAME}"
+else:
+    DEFAULT_CONFIG_DIR = Path("/var/lib/siteblock")
+    DEFAULT_HOSTS = Path("/etc/hosts")
+    BIN_PATH = Path("/usr/local/bin/siteblock")
+    UNIT_DIR = Path("/etc/systemd/system")
+    ENFORCER_UNIT = f"{ENFORCER_NAME}.service"
+    UI_UNIT = f"{UI_NAME}.service"
+    DESKTOP_PATH = Path("/usr/share/applications/siteblock.desktop")
+    SHARE_DIR = Path("/usr/local/share/siteblock")
+    RESTART_HINT = f"No terminal, rode: sudo systemctl restart {ENFORCER_NAME}"
+
+CONFIG_DIR = Path(os.environ.get("SITEBLOCK_DIR", DEFAULT_CONFIG_DIR))
+HOSTS_PATH = Path(os.environ.get("SITEBLOCK_HOSTS", DEFAULT_HOSTS))
 CONFIG_PATH = CONFIG_DIR / "config.json"
 LOCK_PATH = CONFIG_DIR / ".lock"
+UI_LOG = CONFIG_DIR / "interface.log"  # só no Windows, onde a interface roda sem terminal
 PORT = int(os.environ.get("SITEBLOCK_PORT", "8377"))
-
-BIN_PATH = Path("/usr/local/bin/siteblock")
-UNIT_DIR = Path("/etc/systemd/system")
-ENFORCER_UNIT = "siteblock-enforcer.service"
-UI_UNIT = "siteblock-ui.service"
-DESKTOP_PATH = Path("/usr/share/applications/siteblock.desktop")
-HOSTS_BACKUP = Path("/etc/hosts.siteblock.bak")
-SHARE_DIR = Path("/usr/local/share/siteblock")
+HOSTS_BACKUP = HOSTS_PATH.with_name(HOSTS_PATH.name + ".siteblock.bak")
 EXTENSION_DIR = SHARE_DIR / "extensao"
-LOGO_NAME = "logo-block-site.jpg"
 LOGO_PATH = SHARE_DIR / LOGO_NAME
 
 BEGIN_MARK = "# >>> siteblock (gerenciado automaticamente, não edite este bloco)"
@@ -169,6 +197,18 @@ def load_config() -> dict:
         return validate_config(json.load(file))
 
 
+def replace_file(source: str, target: Path) -> None:
+    """os.replace com novas tentativas: no Windows ele falha enquanto outro processo lê o destino."""
+    for attempt in range(20):
+        try:
+            os.replace(source, target)
+            return
+        except PermissionError:
+            if not WINDOWS or attempt == 19:
+                raise
+            time.sleep(0.1)
+
+
 def save_config(config: dict) -> None:
     descriptor, temp_name = tempfile.mkstemp(dir=CONFIG_DIR, prefix=".config-")
     try:
@@ -176,7 +216,7 @@ def save_config(config: dict) -> None:
             json.dump(config, file, indent=2, ensure_ascii=False, sort_keys=True)
             file.write("\n")
         os.chmod(temp_name, 0o644)
-        os.replace(temp_name, CONFIG_PATH)
+        replace_file(temp_name, CONFIG_PATH)
     except BaseException:
         with contextlib.suppress(FileNotFoundError):
             os.unlink(temp_name)
@@ -184,10 +224,26 @@ def save_config(config: dict) -> None:
 
 
 @contextlib.contextmanager
+def config_lock():
+    """Trava entre a CLI e a interface, para uma não sobrescrever a outra."""
+    with LOCK_PATH.open("a+b") as lock:
+        if not WINDOWS:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            yield
+            return
+        lock.seek(0)
+        msvcrt.locking(lock.fileno(), msvcrt.LK_LOCK, 1)  # tenta por até 10 segundos
+        try:
+            yield
+        finally:
+            lock.seek(0)
+            msvcrt.locking(lock.fileno(), msvcrt.LK_UNLCK, 1)
+
+
+@contextlib.contextmanager
 def editing_config():
     """Carrega, entrega para edição e salva, com trava entre CLI e interface."""
-    with LOCK_PATH.open("a") as lock:
-        fcntl.flock(lock, fcntl.LOCK_EX)
+    with config_lock():
         config = load_config()
         yield config
         save_config(config)
@@ -365,21 +421,65 @@ def render_hosts(original: str, domains: list[str]) -> str:
     return base + "\n".join(lines) + "\n"
 
 
+def read_hosts() -> str:
+    # surrogateescape preserva bytes que não são UTF-8, comuns em comentários no hosts do Windows.
+    with HOSTS_PATH.open(encoding="utf-8", errors="surrogateescape") as file:
+        return file.read()
+
+
 def write_hosts(content: str) -> None:
     descriptor, temp_name = tempfile.mkstemp(dir=HOSTS_PATH.parent, prefix=".hosts-siteblock-")
     try:
-        with os.fdopen(descriptor, "w", encoding="utf-8") as file:
+        # Em modo texto, o Windows grava as quebras de linha como CRLF, como o hosts dele espera.
+        with os.fdopen(descriptor, "w", encoding="utf-8", errors="surrogateescape") as file:
             file.write(content)
             file.flush()
             os.fsync(file.fileno())
         os.chmod(temp_name, 0o644)
-        os.replace(temp_name, HOSTS_PATH)
+        if WINDOWS:  # um hosts marcado como somente leitura não pode ser substituído
+            with contextlib.suppress(OSError):
+                os.chmod(HOSTS_PATH, 0o666)
+        replace_file(temp_name, HOSTS_PATH)
     except BaseException:
         with contextlib.suppress(FileNotFoundError):
             os.unlink(temp_name)
         raise
-    if shutil.which("restorecon"):  # distros com SELinux
+    if WINDOWS:  # o cache de DNS do Windows guardaria o endereço antigo
+        with contextlib.suppress(OSError):
+            run_hidden([str(SYSTEM32 / "ipconfig.exe"), "/flushdns"])
+    elif shutil.which("restorecon"):  # distros com SELinux
         subprocess.run(["restorecon", str(HOSTS_PATH)], check=False, capture_output=True)
+
+
+def run_hidden(command: list[str]) -> subprocess.CompletedProcess:
+    """Roda um programa sem abrir janela de console no Windows."""
+    flags = subprocess.CREATE_NO_WINDOW if WINDOWS else 0
+    return subprocess.run(command, capture_output=True, check=False, creationflags=flags)
+
+
+_log_timestamps = False
+
+
+def log(message: str) -> None:
+    if _log_timestamps:
+        message = f"{datetime.now():%Y-%m-%d %H:%M:%S} {message}"
+    print(f"siteblock: {message}", file=sys.stderr, flush=True)
+
+
+def log_to_file(path: Path) -> None:
+    """No Windows os serviços rodam com pythonw, sem terminal: a saída vai para um arquivo."""
+    global _log_timestamps
+    if sys.stdout is not None and sys.stderr is not None:
+        return
+    with contextlib.suppress(OSError):
+        if path.stat().st_size > 1_000_000:
+            path.unlink()
+    try:
+        file = open(path, "a", encoding="utf-8", buffering=1)
+    except OSError:
+        file = open(os.devnull, "w", encoding="utf-8")
+    sys.stdout = sys.stderr = file
+    _log_timestamps = True
 
 
 def managed_names(hosts_text: str) -> set[str]:
@@ -426,6 +526,9 @@ def kill_connections(addresses: set[str]) -> None:
     """O hosts só vale para conexões novas: as abertas precisam ser derrubadas."""
     if not addresses:
         return
+    if WINDOWS:
+        kill_connections_windows(addresses)
+        return
     expression: list[str] = []
     for address in sorted(addresses):
         expression += ["or"] if expression else []
@@ -435,16 +538,57 @@ def kill_connections(addresses: set[str]) -> None:
             ["ss", "-K", "-n", "-t", "-u", *expression], capture_output=True, text=True, timeout=5, check=False
         )
     except (OSError, subprocess.SubprocessError) as error:
-        print(f"siteblock: conexões abertas continuam ativas: {error}", file=sys.stderr, flush=True)
+        log(f"conexões abertas continuam ativas: {error}")
         return
     if result.returncode:
-        print(f"siteblock: conexões abertas continuam ativas: {result.stderr.strip()}", file=sys.stderr, flush=True)
+        log(f"conexões abertas continuam ativas: {result.stderr.strip()}")
+
+
+def kill_connections_windows(addresses: set[str]) -> None:
+    """Fecha as conexões TCP abertas com SetTcpEntry, o mesmo que o TCPView faz.
+
+    O Windows só permite isso para IPv4, e só para um administrador ou SYSTEM.
+    """
+    import ctypes
+    from ctypes import wintypes
+
+    class TcpRow(ctypes.Structure):  # MIB_TCPROW
+        _fields_ = [(name, wintypes.DWORD) for name in ("state", "local_addr", "local_port", "remote_addr", "remote_port")]
+
+    targets = {address for address in addresses if ":" not in address}
+    if not targets:
+        return
+    iphlpapi = ctypes.windll.iphlpapi
+    size = wintypes.DWORD(0)
+    for _ in range(5):  # a tabela pode crescer entre a consulta do tamanho e a leitura
+        buffer = ctypes.create_string_buffer(max(size.value, ctypes.sizeof(wintypes.DWORD)))
+        result = iphlpapi.GetTcpTable(buffer, ctypes.byref(size), False)
+        if result != 122:  # ERROR_INSUFFICIENT_BUFFER
+            break
+    if result == 232:  # ERROR_NO_DATA: nenhuma conexão aberta
+        return
+    if result:
+        log(f"conexões abertas continuam ativas: GetTcpTable devolveu o erro {result}")
+        return
+    count = wintypes.DWORD.from_buffer(buffer).value
+    rows = (TcpRow * count).from_buffer(buffer, ctypes.sizeof(wintypes.DWORD))
+    failures = 0
+    for row in rows:
+        # O endereço vem na ordem de bytes da rede, guardado num DWORD little-endian.
+        remote = socket.inet_ntoa(row.remote_addr.to_bytes(4, "little"))
+        if row.state != 5 or remote not in targets:  # 5 = MIB_TCP_STATE_ESTAB
+            continue
+        entry = TcpRow(12, row.local_addr, row.local_port, row.remote_addr, row.remote_port)  # 12 = DELETE_TCB
+        if iphlpapi.SetTcpEntry(ctypes.byref(entry)):
+            failures += 1
+    if failures:
+        log(f"{failures} conexões abertas continuam ativas: SetTcpEntry falhou")
 
 
 def enforce_once() -> bool:
     """Aplica a agenda. Devolve True se o hosts mudou."""
     desired = blocked_domains(load_config(), datetime.now())
-    current = HOSTS_PATH.read_text(encoding="utf-8")
+    current = read_hosts()
     updated = render_hosts(current, desired)
     if updated == current:
         return False
@@ -463,9 +607,9 @@ def enforce_forever() -> None:
             last_error = None
         except (OSError, ValueError) as error:
             # Configuração ruim não pode virar "libera tudo": o hosts fica como está.
-            message = f"siteblock: mantendo o estado atual: {type(error).__name__}: {error}"
+            message = f"mantendo o estado atual: {type(error).__name__}: {error}"
             if message != last_error:
-                print(message, file=sys.stderr, flush=True)
+                log(message)
             last_error = message
         time.sleep(ENFORCE_INTERVAL)
 
@@ -490,7 +634,7 @@ def has_manual_conflict(domain: str, names: set[str]) -> bool:
 def build_state() -> dict:
     config = load_config()
     moment = datetime.now()
-    hosts_text = HOSTS_PATH.read_text(encoding="utf-8")
+    hosts_text = read_hosts()
     manual = manual_entries(hosts_text)
     desired = blocked_domains(config, moment)
     sites = []
@@ -543,8 +687,7 @@ class Handler(BaseHTTPRequestHandler):
         if not self.host_allowed():
             return self.send_json(403, {"error": "Origem não permitida"})
         if self.path == "/":
-            page = PAGE.replace("__EXTENSION_DIR__", str(EXTENSION_DIR))
-            return self.respond(200, page.encode(), "text/html; charset=utf-8")
+            return self.respond(200, render_page().encode(), "text/html; charset=utf-8")
         if self.path == "/logo.jpg" and (logo := find_logo()):
             return self.respond(200, logo.read_bytes(), "image/jpeg")
         if self.path == "/api/state":
@@ -603,8 +746,16 @@ def find_logo() -> Path | None:
     return None
 
 
+def render_page() -> str:
+    page = PAGE
+    for key, value in (("__EXTENSION_DIR__", EXTENSION_DIR), ("__HOSTS__", HOSTS_PATH), ("__RESTART_HINT__", RESTART_HINT)):
+        page = page.replace(key, html.escape(str(value)))
+    return page
+
+
 def serve() -> None:
-    ThreadingHTTPServer.allow_reuse_address = True
+    # No Windows, SO_REUSEADDR deixaria dois processos ouvirem a mesma porta.
+    ThreadingHTTPServer.allow_reuse_address = not WINDOWS
     server = ThreadingHTTPServer(("127.0.0.1", PORT), Handler)
     print(f"Siteblock em http://127.0.0.1:{PORT}", flush=True)
     server.serve_forever()
@@ -691,12 +842,12 @@ input[type=range]{width:120px;accent-color:var(--blocked)}
     <button class="primary">Adicionar site</button>
   </form>
   <p id="alert" role="alert"></p>
-  <p id="health" role="status">A agenda não está sendo aplicada. No terminal, rode: sudo systemctl restart siteblock-enforcer</p>
+  <p id="health" role="status">A agenda não está sendo aplicada. __RESTART_HINT__</p>
   <div id="list"></div>
   <p id="empty" hidden>Nenhum site na lista. Adicione o primeiro acima.</p>
   <p class="note">Depois de uma liberação, o site só pode ser liberado de novo após 3 vezes o tempo que ficou liberado.
   Para ver o tempo restante dentro do próprio site, carregue a extensão de <code>__EXTENSION_DIR__</code>
-  em chrome://extensions (modo do desenvolvedor, "Carregar sem compactação").</p>
+  em chrome://extensions ou edge://extensions (modo do desenvolvedor, "Carregar sem compactação").</p>
 </main>
 <template id="row">
   <section class="site">
@@ -709,7 +860,7 @@ input[type=range]{width:120px;accent-color:var(--blocked)}
         <button class="lock" hidden>Bloquear agora</button>
         <button class="edit" aria-expanded="false">Editar</button>
       </div>
-      <p class="manual" hidden>Este site também está direto no /etc/hosts. Apague a linha de lá para a agenda e a liberação funcionarem.</p>
+      <p class="manual" hidden>Este site também está direto no __HOSTS__. Apague a linha de lá para a agenda e a liberação funcionarem.</p>
     </div>
     <div class="editor" hidden></div>
   </section>
@@ -1284,7 +1435,7 @@ def write_extension(target: Path) -> None:
 
 
 EXTENSION_HELP = (
-    "Para ver o timer no navegador: abra chrome://extensions, ligue o Modo do desenvolvedor,\n"
+    "Para ver o timer no navegador: abra chrome://extensions (ou edge://extensions), ligue o Modo do desenvolvedor,\n"
     "clique em Carregar sem compactação e escolha {path}\n"
     "(Depois de atualizar o Siteblock, clique em recarregar no cartão da extensão.)"
 )
@@ -1294,15 +1445,43 @@ EXTENSION_HELP = (
 
 
 def require_root() -> None:
-    if os.geteuid() != 0:
+    if WINDOWS:
+        import ctypes
+
+        if not ctypes.windll.shell32.IsUserAnAdmin():
+            raise SystemExit(
+                "Este comando precisa de um terminal aberto como administrador.\n"
+                "No menu Iniciar, procure Terminal (ou PowerShell), clique com o botão direito\n"
+                "e escolha Executar como administrador."
+            )
+    elif os.geteuid() != 0:
         raise SystemExit("Este comando precisa de sudo.")
+
+
+def install() -> None:
+    if WINDOWS:
+        install_windows()
+    elif sys.platform.startswith("linux"):
+        install_linux()
+    else:
+        raise SystemExit("O Siteblock funciona no Linux e no Windows.")
+
+
+def uninstall() -> None:
+    if WINDOWS:
+        uninstall_windows()
+    else:
+        uninstall_linux()
+
+
+# ------------------------------------------------------- instalação: Linux
 
 
 def systemctl(*args: str, check: bool = True) -> None:
     subprocess.run(["systemctl", *args], check=check)
 
 
-def install() -> None:
+def install_linux() -> None:
     require_root()
     user = os.environ.get("SUDO_USER")
     if not user or user == "root":
@@ -1351,12 +1530,7 @@ NoNewPrivileges=true
 [Install]
 WantedBy=multi-user.target
 """, encoding="utf-8")
-    write_extension(EXTENSION_DIR)
-    SHARE_DIR.chmod(0o755)
-    logo_source = source.parent / LOGO_NAME
-    if logo_source.is_file() and logo_source != LOGO_PATH:
-        shutil.copyfile(logo_source, LOGO_PATH)
-        LOGO_PATH.chmod(0o644)
+    install_shared_files(source)
     icon = LOGO_PATH if LOGO_PATH.is_file() else "preferences-system-privacy"
 
     DESKTOP_PATH.write_text(f"""[Desktop Entry]
@@ -1376,18 +1550,224 @@ Categories=Utility;
     print(EXTENSION_HELP.format(path=EXTENSION_DIR))
 
 
-def uninstall() -> None:
+def uninstall_linux() -> None:
     require_root()
     systemctl("disable", "--now", ENFORCER_UNIT, UI_UNIT, check=False)
     for path in (UNIT_DIR / ENFORCER_UNIT, UNIT_DIR / UI_UNIT, DESKTOP_PATH, BIN_PATH):
         path.unlink(missing_ok=True)
     shutil.rmtree(SHARE_DIR, ignore_errors=True)
     systemctl("daemon-reload", check=False)
-    current = HOSTS_PATH.read_text(encoding="utf-8")
+    remove_hosts_block()
+    print(f"Removido. Sua lista continua em {CONFIG_DIR} e o hosts original em {HOSTS_BACKUP}.")
+
+
+def remove_hosts_block() -> None:
+    current = read_hosts()
     updated = render_hosts(current, [])
     if updated != current:
         write_hosts(updated)
+
+
+def install_shared_files(source: Path) -> None:
+    """Extensão e logo, iguais nos dois sistemas."""
+    write_extension(EXTENSION_DIR)
+    SHARE_DIR.chmod(0o755)
+    logo_source = source.parent / LOGO_NAME
+    if logo_source.is_file() and logo_source != LOGO_PATH:
+        shutil.copyfile(logo_source, LOGO_PATH)
+        LOGO_PATH.chmod(0o644)
+
+
+# ----------------------------------------------------- instalação: Windows
+#
+# Os serviços do systemd viram duas tarefas no Agendador de Tarefas:
+#   siteblock-enforcer  roda como SYSTEM desde o boot e reescreve o hosts.
+#   siteblock-ui        roda como você quando você entra no Windows e serve a interface.
+# As duas são reabertas a cada 5 minutos se tiverem parado (e ignoradas se ainda estiverem rodando).
+
+
+def windows_run(*args: str, check: bool = True) -> subprocess.CompletedProcess:
+    result = run_hidden(list(args))
+    if check and result.returncode:
+        message = (result.stderr or result.stdout).decode("oem", errors="replace").strip()
+        raise SystemExit(f"Erro ao rodar {Path(args[0]).name}: {message}")
+    return result
+
+
+def schtasks(*args: str, check: bool = True) -> subprocess.CompletedProcess:
+    return windows_run(str(SYSTEM32 / "schtasks.exe"), *args, check=check)
+
+
+def windows_user() -> str:
+    """A conta que abriu o terminal como administrador: é ela que usa a interface."""
+    name, domain = os.environ.get("USERNAME", ""), os.environ.get("USERDOMAIN", "")
+    if not name or name.upper() == "SYSTEM" or name.endswith("$"):
+        raise SystemExit("Rode a partir da sua conta, em um terminal aberto como administrador.")
+    return f"{domain}\\{name}" if domain else name
+
+
+def windows_python() -> tuple[Path, Path]:
+    """O python.exe (para o comando no terminal) e o pythonw.exe (para as tarefas, sem janela)."""
+    python = Path(getattr(sys, "_base_executable", "") or sys.executable).resolve()
+    if "WindowsApps" in python.parts:
+        raise SystemExit(
+            "O Python da Microsoft Store não pode ser usado pelas tarefas do Windows.\n"
+            "Instale o Python de https://www.python.org/downloads/ e rode a instalação de novo."
+        )
+    pythonw = python.with_name("pythonw.exe")
+    return python, pythonw if pythonw.is_file() else python
+
+
+def short_path(path: Path) -> str:
+    """Nome curto (8.3) do caminho: o cmd lê o .cmd na página de código do console, sem acentos."""
+    import ctypes
+
+    buffer = ctypes.create_unicode_buffer(1024)
+    if ctypes.windll.kernel32.GetShortPathNameW(str(path), buffer, len(buffer)):
+        return buffer.value
+    return str(path)
+
+
+def write_cmd(python: Path) -> None:
+    # Tudo numa linha com "exit /b": o cmd não tenta ler o arquivo de novo depois de um uninstall.
+    for target in (str(python), short_path(python)):
+        line = f'@"{target}" "{BIN_PATH}" %* & exit /b\r\n'
+        try:
+            CMD_PATH.write_bytes(line.encode("oem"))
+            return
+        except UnicodeEncodeError:
+            continue
+    raise SystemExit(f"Não consegui criar {CMD_PATH}: o caminho do Python tem caracteres não suportados.")
+
+
+def task_xml(description: str, command: Path, arguments: str, user: str | None) -> str:
+    """Definição da tarefa. Sem limite de duração e sem parar na bateria, ao contrário do padrão."""
+    esc = lambda text: html.escape(str(text), quote=False)  # noqa: E731
+    repeat = "<Repetition><Interval>PT5M</Interval><StopAtDurationEnd>false</StopAtDurationEnd></Repetition>"
+    if user is None:  # enforcer: SYSTEM, no boot e a cada logon de qualquer conta
+        triggers = (f"<BootTrigger>{repeat}<Enabled>true</Enabled></BootTrigger>"
+                    "<LogonTrigger><Enabled>true</Enabled></LogonTrigger>")
+        principal = "<UserId>S-1-5-18</UserId><RunLevel>HighestAvailable</RunLevel>"
+    else:  # interface: só a sua conta, sem privilégios, quando você entra
+        triggers = f"<LogonTrigger>{repeat}<Enabled>true</Enabled><UserId>{esc(user)}</UserId></LogonTrigger>"
+        principal = (f"<UserId>{esc(user)}</UserId><LogonType>InteractiveToken</LogonType>"
+                     "<RunLevel>LeastPrivilege</RunLevel>")
+    return f"""<?xml version="1.0" encoding="UTF-16"?>
+<Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
+  <RegistrationInfo><Description>{esc(description)}</Description></RegistrationInfo>
+  <Triggers>{triggers}</Triggers>
+  <Principals><Principal id="Author">{principal}</Principal></Principals>
+  <Settings>
+    <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>
+    <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>
+    <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>
+    <AllowHardTerminate>true</AllowHardTerminate>
+    <StartWhenAvailable>true</StartWhenAvailable>
+    <RunOnlyIfNetworkAvailable>false</RunOnlyIfNetworkAvailable>
+    <IdleSettings><StopOnIdleEnd>false</StopOnIdleEnd><RestartOnIdle>false</RestartOnIdle></IdleSettings>
+    <AllowStartOnDemand>true</AllowStartOnDemand>
+    <Enabled>true</Enabled>
+    <Hidden>false</Hidden>
+    <RunOnlyIfIdle>false</RunOnlyIfIdle>
+    <WakeToRun>false</WakeToRun>
+    <ExecutionTimeLimit>PT0S</ExecutionTimeLimit>
+    <RestartOnFailure><Interval>PT1M</Interval><Count>3</Count></RestartOnFailure>
+  </Settings>
+  <Actions Context="Author">
+    <Exec>
+      <Command>{esc(command)}</Command>
+      <Arguments>{esc(arguments)}</Arguments>
+      <WorkingDirectory>{esc(APP_DIR)}</WorkingDirectory>
+    </Exec>
+  </Actions>
+</Task>
+"""
+
+
+def register_task(name: str, xml: str) -> None:
+    with tempfile.TemporaryDirectory() as folder:
+        path = Path(folder) / f"{name}.xml"
+        path.write_text(xml, encoding="utf-16")
+        schtasks("/Create", "/TN", name, "/XML", str(path), "/F")
+
+
+def windows_path_entry(add: bool) -> None:
+    """Põe ou tira a pasta do Siteblock do PATH do sistema, para o comando "siteblock" funcionar."""
+    import ctypes
+    import winreg
+
+    key_path = r"SYSTEM\CurrentControlSet\Control\Session Manager\Environment"
+    with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, key_path, 0, winreg.KEY_READ | winreg.KEY_WRITE) as key:
+        value, kind = winreg.QueryValueEx(key, "Path")
+        parts = [part for part in value.split(";") if part]
+        mine = os.path.normcase(str(APP_DIR))
+        others = [part for part in parts if os.path.normcase(part.rstrip("\\")) != mine]
+        updated = others + [str(APP_DIR)] if add else others
+        if updated == parts:
+            return
+        winreg.SetValueEx(key, "Path", 0, kind, ";".join(updated))
+    # Avisa o Windows: terminais abertos a partir de agora já enxergam o PATH novo.
+    ctypes.windll.user32.SendMessageTimeoutW(0xFFFF, 0x001A, 0, "Environment", 0x0002, 5000, ctypes.byref(ctypes.c_size_t()))
+
+
+def install_windows() -> None:
+    require_root()
+    user = windows_user()
+    python, pythonw = windows_python()
+    if Path.home().resolve() in python.parents:
+        print(
+            "Aviso: o Python está instalado só para a sua conta, dentro da sua pasta de usuário.\n"
+            "Funciona, mas o ideal é instalar o Python para todos os usuários (opção do instalador do\n"
+            "python.org), porque o enforcer roda como SYSTEM com esse Python.\n"
+        )
+
+    for name in (ENFORCER_NAME, UI_NAME):  # numa atualização, para as tarefas antes de trocar os arquivos
+        schtasks("/End", "/TN", name, check=False)
+
+    APP_DIR.mkdir(parents=True, exist_ok=True)
+    source = Path(__file__).resolve()
+    if source != BIN_PATH:
+        shutil.copy2(source, BIN_PATH)
+    write_cmd(python)
+
+    CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+    if not CONFIG_PATH.exists():
+        save_config({"sites": {}})
+    LOCK_PATH.touch()
+    # A interface roda como você e precisa editar a lista; o hosts continua só para o administrador.
+    windows_run(str(SYSTEM32 / "icacls.exe"), str(CONFIG_DIR), "/grant", f"{user}:(OI)(CI)M", "/T", "/Q")
+
+    if not HOSTS_BACKUP.exists():
+        shutil.copy2(HOSTS_PATH, HOSTS_BACKUP)
+
+    install_shared_files(source)
+    SHORTCUT_PATH.parent.mkdir(parents=True, exist_ok=True)
+    SHORTCUT_PATH.write_text(f"[InternetShortcut]\r\nURL=http://127.0.0.1:{PORT}/\r\n", encoding="ascii")
+    windows_path_entry(add=True)
+
+    register_task(ENFORCER_NAME, task_xml(
+        "Siteblock: aplica a agenda no arquivo hosts", pythonw, f'"{BIN_PATH}" enforce', None))
+    register_task(UI_NAME, task_xml("Siteblock: interface local", pythonw, f'"{BIN_PATH}" serve', user))
+    for name in (ENFORCER_NAME, UI_NAME):
+        schtasks("/Run", "/TN", name)
+
+    print(f"Pronto. Abra http://127.0.0.1:{PORT} ou procure Siteblock no menu Iniciar.")
+    print("Para usar o comando siteblock, abra um terminal novo.\n")
+    print(EXTENSION_HELP.format(path=EXTENSION_DIR))
+
+
+def uninstall_windows() -> None:
+    require_root()
+    for name in (ENFORCER_NAME, UI_NAME):
+        schtasks("/End", "/TN", name, check=False)
+        schtasks("/Delete", "/TN", name, "/F", check=False)
+    remove_hosts_block()
+    windows_path_entry(add=False)
+    SHORTCUT_PATH.unlink(missing_ok=True)
+    shutil.rmtree(APP_DIR, ignore_errors=True)
     print(f"Removido. Sua lista continua em {CONFIG_DIR} e o hosts original em {HOSTS_BACKUP}.")
+    if APP_DIR.exists():
+        print(f"Não consegui apagar tudo em {APP_DIR}; apague a pasta à mão.")
 
 
 # --------------------------------------------------------------------- CLI
@@ -1455,7 +1835,7 @@ def build_parser() -> argparse.ArgumentParser:
     unblock.add_argument("minutes", type=int)
     commands.add_parser("block", help="encerra uma liberação temporária").add_argument("domain")
     commands.add_parser("extension", help="grava a extensão do navegador em uma pasta").add_argument("dir")
-    for name, text in (("enforce", "aplica a agenda (serviço root)"), ("serve", "abre a interface"),
+    for name, text in (("enforce", "aplica a agenda (serviço root/SYSTEM)"), ("serve", "abre a interface"),
                        ("install", "instala os serviços"), ("uninstall", "remove tudo")):
         commands.add_parser(name, help=text)
     return parser
@@ -1466,8 +1846,11 @@ def main() -> None:
     command = args.command
     try:
         if command == "enforce":
+            if WINDOWS:
+                log_to_file(ENFORCER_LOG)
             enforce_forever()
         elif command == "serve":
+            log_to_file(UI_LOG)
             serve()
         elif command == "install":
             install()
