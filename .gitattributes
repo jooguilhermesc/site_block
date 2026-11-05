@@ -1,0 +1,2 @@
+# O cmd do Windows se perde em arquivos .cmd com quebra de linha do Linux.
+*.cmd text eol=crlf

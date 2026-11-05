@@ -2,7 +2,7 @@
 
 Bloqueia sites no Linux e no Windows pelo arquivo hosts do sistema, com agenda por dia da semana e liberação temporária de 1 a 15 minutos. Tudo roda localmente: uma interface no navegador (`http://127.0.0.1:8377`) e um comando `siteblock` no terminal.
 
-É um arquivo só, [siteblock.py](siteblock.py), sem dependências além do Python. O mesmo arquivo serve para os dois sistemas: ele reconhece onde está rodando e usa o mecanismo certo para bloquear. O logo, [logo-block-site.jpg](logo-block-site.jpg), é opcional: se estiver na mesma pasta na hora da instalação, vira o ícone da aba (e, no Linux, do atalho no menu).
+É um arquivo só, [siteblock.py](siteblock.py), sem dependências além do Python. O mesmo arquivo serve para os dois sistemas: ele reconhece onde está rodando e usa o mecanismo certo para bloquear. No Windows, o [instalar.cmd](windows-installer/instalar.cmd) só abre o assistente de instalação que está dentro do `siteblock.py`. O logo, [logo-block-site.jpg](logo-block-site.jpg), é opcional: se estiver na mesma pasta na hora da instalação, vira o ícone da aba (e, no Linux, do atalho no menu).
 
 ## O que ele faz
 
@@ -24,11 +24,11 @@ Bloqueia sites no Linux e no Windows pelo arquivo hosts do sistema, com agenda p
 **Windows**
 
 - Windows 10 ou 11
-- Python 3.10 ou mais novo, baixado de [python.org](https://www.python.org/downloads/). O Python da Microsoft Store não serve, porque as tarefas do Windows não conseguem usá-lo. No instalador, marque **Add python.exe to PATH** e, de preferência, **Install for all users**.
+- Python 3.10 ou mais novo, de [python.org](https://www.python.org/downloads/). O Python da Microsoft Store não serve, porque as tarefas do Windows não conseguem usá-lo. Se faltar, o assistente de instalação oferece baixar e instalar. Para instalar por conta própria, marque no instalador **Add python.exe to PATH** e, de preferência, **Install for all users**.
 
 ## Instalação
 
-A instalação mexe no arquivo hosts e cria serviços que iniciam com o PC, então **o comando precisa rodar com permissão de administrador**. Sem isso, ele para e avisa.
+A instalação mexe no arquivo hosts e cria serviços que iniciam com o PC, então **precisa de permissão de administrador**. No Windows, o assistente pede essa permissão sozinho; pelo terminal, o comando para e avisa se ela faltar.
 
 ### Linux
 
@@ -39,6 +39,27 @@ sudo python3 siteblock.py install
 ```
 
 ### Windows
+
+**Pelo assistente.** Dê um duplo clique em `instalar.cmd`, na pasta `windows-installer`. Ele procura o `siteblock.py` na própria pasta e na pasta de cima.
+
+1. A janela do assistente mostra o que vai ser feito. Clique em **Instalar**.
+2. O Windows pede a permissão de administrador. Confirme.
+3. Quando a instalação termina, a tela do Siteblock abre no seu navegador padrão.
+
+Antes de abrir a janela, o `instalar.cmd` verifica se o computador tem um Python que sirva. Se não tiver, ele pergunta se pode instalar. Com um **Sim**:
+
+- baixa o instalador do Python de python.org (cerca de 35 MB);
+- confere se o arquivo está assinado pela Python Software Foundation, e só então o executa;
+- instala para todos os usuários, e por isso o Windows pede a permissão de administrador;
+- abre o assistente do Siteblock.
+
+Com um **Não**, nada é baixado nem instalado. A versão instalada é a da linha `set "PYVER=..."`, no começo do `instalar.cmd`.
+
+Pelo terminal, `python siteblock.py setup` abre o mesmo assistente, sem precisar de terminal como administrador.
+
+Abra o assistente **a partir da sua própria conta do Windows**. A interface fica ligada à conta que abriu o assistente, mesmo que a permissão seja dada com a senha de outra conta.
+
+**Pelo terminal.** Dá no mesmo, sem a janela:
 
 1. Abra o menu Iniciar e digite **Terminal** (ou **PowerShell**).
 2. Clique com o botão direito e escolha **Executar como administrador**. Confirme o aviso do Windows.
@@ -51,7 +72,7 @@ python siteblock.py install
 
 Se o comando `python` não for encontrado, use `py siteblock.py install`.
 
-Abra o terminal como administrador **a partir da sua própria conta do Windows**. A interface fica ligada à conta que fez a instalação.
+Por esse caminho, a interface fica ligada à conta que abriu o terminal como administrador.
 
 **Firefox no Windows.** Por conta própria, o Firefox escapa do bloqueio no Windows: ele pode usar DNS seguro, guarda os endereços em cache e mantém conexões por QUIC e IPv6, que o Windows não deixa derrubar. Por isso, a instalação configura o Firefox por política do sistema:
 
@@ -94,7 +115,7 @@ Para gravar a extensão em outra pasta: `siteblock extension ~/siteblock-extensa
 
 ### Atualizar
 
-Baixe o `siteblock.py` novo e rode o mesmo comando de instalação, também como administrador. Sua lista e seus horários são mantidos.
+Baixe o `siteblock.py` novo e instale de novo do mesmo jeito: pelo assistente ou pelo comando de instalação, como administrador. Sua lista e seus horários são mantidos.
 
 ### Desinstalar
 
@@ -106,13 +127,15 @@ Linux:
 sudo siteblock uninstall
 ```
 
-Windows, em um terminal aberto como administrador:
+Windows, pelo assistente: abra **Configurações > Aplicativos > Aplicativos instalados**, procure **Siteblock** e escolha **Desinstalar**. O assistente mostra o que vai ser removido e pede a permissão de administrador. Outros dois caminhos levam à mesma janela: o botão **Desinstalar** que aparece ao abrir o `instalar.cmd` com o Siteblock já instalado, e o comando `siteblock setup --uninstall`.
+
+Windows, pelo terminal aberto como administrador:
 
 ```powershell
 siteblock uninstall
 ```
 
-Isso remove os serviços, o atalho, o comando `siteblock`, a extensão, o bloco do Siteblock no hosts e, no Windows, as políticas do Firefox. Remova também a extensão na página de extensões do navegador. A lista e uma cópia do hosts original continuam no sistema:
+Isso remove os serviços, o atalho, o comando `siteblock`, a extensão, o bloco do Siteblock no hosts e, no Windows, as políticas do Firefox e a entrada nos aplicativos instalados. Remova também a extensão na página de extensões do navegador. A lista e uma cópia do hosts original continuam no sistema:
 
 | Sistema | Lista | Cópia do hosts |
 |---|---|---|
@@ -212,6 +235,9 @@ schtasks /Query /TN siteblock-ui
 schtasks /Run /TN siteblock-ui
 schtasks /Run /TN siteblock-enforcer
 ```
+
+**O assistente parou com erro.**
+A janela mostra o que a instalação ou a desinstalação informou. O mesmo texto fica em `C:\Program Files\Siteblock\instalacao.log`.
 
 ## Variáveis de ambiente
 

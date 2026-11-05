@@ -6,8 +6,11 @@ Funciona no Linux (systemd) e no Windows (Agendador de Tarefas). Dois processos,
   serve    roda como seu usuário e oferece a interface em http://127.0.0.1:8377.
 
 Instalação:  sudo python3 siteblock.py install       (Linux)
+             duplo clique em instalar.cmd            (Windows: assistente que pede a permissão)
              python siteblock.py install             (Windows, terminal como administrador)
-Remoção:     sudo siteblock uninstall / siteblock uninstall (terminal como administrador)
+Remoção:     sudo siteblock uninstall                (Linux)
+             Configurações > Aplicativos > Siteblock (Windows: o assistente pede a permissão)
+             siteblock uninstall                     (Windows, terminal como administrador)
 """
 from __future__ import annotations
 
@@ -52,6 +55,7 @@ if WINDOWS:
     SHORTCUT_PATH = PROGRAM_DATA / "Microsoft" / "Windows" / "Start Menu" / "Programs" / "Siteblock.url"
     # O log do enforcer fica onde só o administrador escreve: ele roda como SYSTEM.
     ENFORCER_LOG = APP_DIR / "enforcer.log"
+    INSTALL_LOG = APP_DIR / "instalacao.log"  # andamento da instalação, lido pelo assistente
     RESTART_HINT = f"Em um terminal aberto como administrador, rode: schtasks /Run /TN {ENFORCER_NAME}"
 else:
     DEFAULT_CONFIG_DIR = Path("/var/lib/siteblock")
@@ -1458,18 +1462,18 @@ def require_root() -> None:
         raise SystemExit("Este comando precisa de sudo.")
 
 
-def install() -> None:
+def install(user: str | None = None, report: bool = False) -> None:
     if WINDOWS:
-        install_windows()
+        install_windows(user, report)
     elif sys.platform.startswith("linux"):
         install_linux()
     else:
         raise SystemExit("O Siteblock funciona no Linux e no Windows.")
 
 
-def uninstall() -> None:
+def uninstall(report: bool = False) -> None:
     if WINDOWS:
-        uninstall_windows()
+        uninstall_windows(report)
     else:
         uninstall_linux()
 
@@ -1758,9 +1762,47 @@ def firefox_policies(enable: bool) -> None:
                 winreg.DeleteValue(key, "Preferences")
 
 
-def install_windows() -> None:
+UNINSTALL_KEY = r"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\Siteblock"
+
+
+def windows_apps_entry(pythonw: Path | None) -> None:
+    """Põe o Siteblock na lista de aplicativos instalados do Windows, ou tira (com None).
+
+    O botão Desinstalar de lá abre o assistente, que pede a permissão de administrador.
+    """
+    import winreg
+
+    if pythonw is None:
+        with contextlib.suppress(OSError):
+            winreg.DeleteKeyEx(winreg.HKEY_LOCAL_MACHINE, UNINSTALL_KEY, winreg.KEY_WOW64_64KEY, 0)
+        return
+    command = subprocess.list2cmdline([str(pythonw), str(BIN_PATH), "setup", "--uninstall"])
+    access = winreg.KEY_WRITE | winreg.KEY_WOW64_64KEY
+    with winreg.CreateKeyEx(winreg.HKEY_LOCAL_MACHINE, UNINSTALL_KEY, 0, access) as key:
+        for name, value in (("DisplayName", "Siteblock"), ("InstallLocation", str(APP_DIR)), ("UninstallString", command)):
+            winreg.SetValueEx(key, name, 0, winreg.REG_SZ, value)
+        for name in ("NoModify", "NoRepair"):  # sem os botões Modificar e Reparar
+            winreg.SetValueEx(key, name, 0, winreg.REG_DWORD, 1)
+
+
+def remove_app_dir() -> None:
+    """Apaga a pasta do programa. As tarefas recém-encerradas ainda seguram arquivos por um instante."""
+    for _ in range(10):
+        shutil.rmtree(APP_DIR, ignore_errors=True)
+        if not APP_DIR.exists():
+            return
+        time.sleep(0.3)
+
+
+def install_windows(user: str | None = None, report: bool = False) -> None:
+    """Instala ou atualiza. Chamado pelo assistente, recebe a conta de quem o abriu e grava o andamento."""
     require_root()
-    user = windows_user()
+    if report:  # aberto pelo assistente com pythonw, sem terminal: a saída vai para INSTALL_LOG
+        APP_DIR.mkdir(parents=True, exist_ok=True)
+        sys.stdout = sys.stderr = open(INSTALL_LOG, "w", encoding="utf-8", buffering=1)
+    # Quem digita a senha de outra conta no aviso do Windows instala como essa outra conta:
+    # a interface tem de ficar com quem abriu o assistente.
+    user = user or windows_user()
     python, pythonw = windows_python()
     if Path.home().resolve() in python.parents:
         print(
@@ -1769,9 +1811,11 @@ def install_windows() -> None:
             "python.org), porque o enforcer roda como SYSTEM com esse Python.\n"
         )
 
+    print("Parando os serviços…")
     for name in (ENFORCER_NAME, UI_NAME):  # numa atualização, para as tarefas antes de trocar os arquivos
         schtasks("/End", "/TN", name, check=False)
 
+    print("Copiando os arquivos…")
     APP_DIR.mkdir(parents=True, exist_ok=True)
     source = Path(__file__).resolve()
     if source != BIN_PATH:
@@ -1792,8 +1836,11 @@ def install_windows() -> None:
     SHORTCUT_PATH.parent.mkdir(parents=True, exist_ok=True)
     SHORTCUT_PATH.write_text(f"[InternetShortcut]\r\nURL=http://127.0.0.1:{PORT}/\r\n", encoding="ascii")
     windows_path_entry(add=True)
+    windows_apps_entry(pythonw)
+    print("Configurando o Firefox…")
     firefox_policies(enable=True)
 
+    print("Iniciando os serviços…")
     register_task(ENFORCER_NAME, task_xml(
         "Siteblock: aplica a agenda no arquivo hosts", pythonw, f'"{BIN_PATH}" enforce', None))
     register_task(UI_NAME, task_xml("Siteblock: interface local", pythonw, f'"{BIN_PATH}" serve', user))
@@ -1806,19 +1853,371 @@ def install_windows() -> None:
     print(EXTENSION_HELP.format(path=EXTENSION_DIR))
 
 
-def uninstall_windows() -> None:
+def uninstall_windows(report: bool = False) -> None:
+    """Remove tudo, menos a lista. Chamado pelo assistente, grava o andamento em INSTALL_LOG."""
     require_root()
+    streams, log = (sys.stdout, sys.stderr), None
+    if report and APP_DIR.is_dir():  # aberto pelo assistente com pythonw, sem terminal
+        log = sys.stdout = sys.stderr = open(INSTALL_LOG, "w", encoding="utf-8", buffering=1)
+    print("Parando os serviços…")
     for name in (ENFORCER_NAME, UI_NAME):
         schtasks("/End", "/TN", name, check=False)
         schtasks("/Delete", "/TN", name, "/F", check=False)
+    print("Liberando os sites no arquivo hosts…")
     remove_hosts_block()
+    print("Removendo o programa…")
     windows_path_entry(add=False)
+    windows_apps_entry(None)
     firefox_policies(enable=False)
     SHORTCUT_PATH.unlink(missing_ok=True)
-    shutil.rmtree(APP_DIR, ignore_errors=True)
+    if log:  # o log fica na pasta que vai ser apagada: aberto, ele impediria isso
+        sys.stdout, sys.stderr = streams
+        log.close()
+    remove_app_dir()
     print(f"Removido. Sua lista continua em {CONFIG_DIR} e o hosts original em {HOSTS_BACKUP}.")
     if APP_DIR.exists():
         print(f"Não consegui apagar tudo em {APP_DIR}; apague a pasta à mão.")
+
+
+# ------------------------------------------------- assistente de instalação
+#
+# "siteblock setup" (ou um duplo clique em instalar.cmd) abre uma janela que pede a permissão de
+# administrador, instala e abre a interface no navegador. São dois processos:
+#   o assistente  roda como você, sem privilégios: mostra a janela e abre o navegador.
+#   a instalação  é o "install" de sempre, que o assistente abre como administrador (aviso do UAC).
+# O andamento vai da instalação para o assistente por INSTALL_LOG.
+#
+# A desinstalação segue o mesmo caminho, com "siteblock setup --uninstall" abrindo o "uninstall".
+# É esse o comando que o botão Desinstalar das Configurações do Windows roda.
+
+
+def setup(uninstall: bool = False) -> None:
+    if not WINDOWS:
+        raise SystemExit("O assistente é só para o Windows. No Linux, rode: sudo python3 siteblock.py install")
+    import ctypes
+
+    python, pythonw = windows_python()
+    user = windows_user()
+    try:
+        import tkinter  # noqa: F401
+    except ImportError:
+        raise SystemExit(
+            "Este Python veio sem o tkinter, que o assistente usa para abrir a janela.\n"
+            "Instale pelo terminal: abra-o como administrador e rode  python siteblock.py install"
+        ) from None
+    script = Path(__file__).resolve()
+    if pythonw != python and Path(sys.executable).name.lower() != pythonw.name.lower():
+        # Reabre sem console: o terminal (ou a janela do instalar.cmd) fica livre na hora.
+        subprocess.Popen(
+            [str(pythonw), str(script), "setup", *(["--uninstall"] if uninstall else [])],
+            creationflags=subprocess.DETACHED_PROCESS, close_fds=True,
+            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
+        return
+    try:
+        Wizard(pythonw, script, user).run(uninstall)
+    except Exception as error:  # sem console, o erro só aparece se for mostrado numa janela
+        ctypes.windll.user32.MessageBoxW(None, f"O assistente parou com um erro:\n\n{error}", "Siteblock", 0x10)
+        raise SystemExit(1) from None
+
+
+def run_elevated(program: Path, arguments: list[str], window: int = 0) -> int | None:
+    """Abre um programa como administrador, com o aviso do Windows (UAC), e espera ele terminar.
+
+    Devolve o código de saída, ou None se a permissão foi recusada.
+    """
+    import ctypes
+    from ctypes import wintypes
+
+    class ShellExecuteInfo(ctypes.Structure):  # SHELLEXECUTEINFOW
+        _fields_ = [
+            ("size", wintypes.DWORD), ("mask", wintypes.ULONG), ("window", wintypes.HWND),
+            ("verb", wintypes.LPCWSTR), ("file", wintypes.LPCWSTR), ("parameters", wintypes.LPCWSTR),
+            ("directory", wintypes.LPCWSTR), ("show", ctypes.c_int), ("instance", wintypes.HINSTANCE),
+            ("id_list", ctypes.c_void_p), ("class_name", wintypes.LPCWSTR), ("class_key", wintypes.HKEY),
+            ("hot_key", wintypes.DWORD), ("icon", wintypes.HANDLE), ("process", wintypes.HANDLE),
+        ]
+
+    shell32 = ctypes.WinDLL("shell32", use_last_error=True)
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    shell32.ShellExecuteExW.argtypes = [ctypes.POINTER(ShellExecuteInfo)]
+    kernel32.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+    kernel32.GetExitCodeProcess.argtypes = [wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD)]
+    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+
+    info = ShellExecuteInfo(
+        size=ctypes.sizeof(ShellExecuteInfo),
+        mask=0x40 | 0x100 | 0x400,  # devolve o processo; espera ele abrir; erros voltam aqui, sem janela do Windows
+        window=window,
+        verb="runas",
+        file=str(program),
+        parameters=subprocess.list2cmdline(arguments),
+    )
+    if not shell32.ShellExecuteExW(ctypes.byref(info)):
+        error = ctypes.get_last_error()
+        if error == 1223:  # ERROR_CANCELLED: a pessoa respondeu "Não" ao aviso
+            return None
+        raise ctypes.WinError(error)
+    try:
+        kernel32.WaitForSingleObject(info.process, 0xFFFFFFFF)
+        code = wintypes.DWORD()
+        if not kernel32.GetExitCodeProcess(info.process, ctypes.byref(code)):
+            raise ctypes.WinError(ctypes.get_last_error())
+        return code.value
+    finally:
+        kernel32.CloseHandle(info.process)
+
+
+def wait_for_interface(timeout: float = 20) -> bool:
+    """Espera a interface aceitar conexões: a tarefa acabou de ser iniciada."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        with contextlib.suppress(OSError):
+            socket.create_connection(("127.0.0.1", PORT), timeout=1).close()
+            return True
+        time.sleep(0.3)
+    return False
+
+
+def read_install_log(since: float) -> str:
+    """O que a instalação aberta depois de `since` já escreveu. Ignora o log de uma instalação anterior."""
+    try:
+        if INSTALL_LOG.stat().st_mtime < since - 2:
+            return ""
+        return INSTALL_LOG.read_text(encoding="utf-8", errors="replace").strip()
+    except OSError:
+        return ""
+
+
+class Wizard:
+    """A janela do assistente: apresentação, andamento e resultado."""
+
+    INK, SOFT, ALERT = "#14303a", "#c4d1d6", "#96244f"  # as cores da interface
+    WIDTH, HEIGHT = 560, 350  # da área das páginas, em pixels a 100% de escala
+
+    def __init__(self, pythonw: Path, script: Path, user: str) -> None:
+        import ctypes
+        import tkinter as tk
+        from tkinter import ttk
+
+        self.program, self.script, self.user = pythonw, str(script), user
+        self.updating = BIN_PATH.exists()  # já instalado: a instalação vira atualização
+        self.removing = False  # a operação em andamento é a desinstalação
+        self.busy = False
+        self.outcome: tuple[int | None, bool, str] | None = None
+        self.started = 0.0
+
+        with contextlib.suppress(OSError, AttributeError):  # sem isso a janela fica borrada em telas com escala
+            ctypes.windll.shcore.SetProcessDpiAwareness(1)
+        self.tk, self.ttk = tk, ttk
+        self.root = root = tk.Tk()
+        root.title("Instalar o Siteblock")
+        root.resizable(False, False)
+        root.protocol("WM_DELETE_WINDOW", self.close)
+        scale = root.winfo_fpixels("1i") / 96
+        self.px = px = lambda pixels: round(pixels * scale)
+
+        header = tk.Frame(root, bg=self.INK)
+        header.pack(fill="x")
+        tk.Label(header, text="Siteblock", bg=self.INK, fg="white", font=("Segoe UI", 18, "bold")).pack(
+            anchor="w", padx=px(24), pady=(px(16), 0))
+        self.subtitle = tk.Label(header, text="Assistente de instalação", bg=self.INK, fg=self.SOFT, font=("Segoe UI", 10))
+        self.subtitle.pack(anchor="w", padx=px(24), pady=(0, px(16)))
+        self.body = ttk.Frame(root, width=px(self.WIDTH), height=px(self.HEIGHT))
+        self.body.pack(fill="both", expand=True)
+        self.body.grid_propagate(False)  # todas as páginas do mesmo tamanho: a janela não pula
+        self.body.grid_rowconfigure(0, weight=1)
+        self.body.grid_columnconfigure(0, weight=1)
+        ttk.Separator(root).pack(fill="x")
+        self.buttons = ttk.Frame(root, padding=(px(16), px(12)))
+        self.buttons.pack(fill="x")
+
+    def run(self, uninstall: bool = False) -> None:
+        root = self.root
+        if uninstall:  # aberto pelo botão Desinstalar das Configurações do Windows
+            root.title("Desinstalar o Siteblock")
+            self.subtitle.configure(text="Assistente de desinstalação")
+        if not uninstall:
+            self.welcome()
+        elif self.updating:
+            self.confirm_removal()
+        else:
+            frame = self.page("Nada para desinstalar", ("Fechar", self.close))
+            self.text(frame, "O Siteblock não está instalado neste computador.")
+        root.update_idletasks()
+        left = (root.winfo_screenwidth() - root.winfo_reqwidth()) // 2
+        top = (root.winfo_screenheight() - root.winfo_reqheight()) // 3
+        root.geometry(f"+{left}+{top}")
+        root.mainloop()
+
+    def close(self) -> None:
+        if not self.busy:  # fechar a janela não pararia a instalação, que roda em outro processo
+            self.root.destroy()
+
+    # ---- peças das páginas
+
+    def page(self, title: str, *buttons: tuple[str, object]):
+        """Troca a página: título, área de conteúdo (devolvida) e botões, o primeiro como padrão."""
+        for area in (self.body, self.buttons):
+            for child in area.winfo_children():
+                child.destroy()
+        px, ttk = self.px, self.ttk
+        frame = ttk.Frame(self.body, padding=(px(24), px(18)))
+        frame.grid(sticky="nsew")
+        ttk.Label(frame, text=title, font=("Segoe UI", 13, "bold")).pack(anchor="w", pady=(0, px(10)))
+        self.root.unbind("<Return>")
+        for index, (label, action) in reversed(list(enumerate(buttons))):  # empilha da direita para a esquerda
+            button = ttk.Button(self.buttons, text=label, command=action, default="active" if index == 0 else "normal")
+            button.pack(side="right", padx=(px(8), 0), ipadx=px(6))
+            if index == 0:
+                button.focus_set()
+                self.root.bind("<Return>", lambda event, button=button: button.invoke())
+        return frame
+
+    def text(self, parent, content: str, **options):
+        label = self.ttk.Label(parent, text=content, wraplength=self.px(self.WIDTH - 48), justify="left", **options)
+        label.pack(anchor="w", pady=(0, self.px(8)))
+        return label
+
+    def bullets(self, parent, items: list[str]) -> None:
+        px, ttk = self.px, self.ttk
+        for item in items:
+            row = ttk.Frame(parent)
+            row.pack(anchor="w", pady=(0, px(4)))
+            ttk.Label(row, text="•").pack(side="left", anchor="n", padx=(px(6), px(8)))
+            ttk.Label(row, text=item, wraplength=px(self.WIDTH - 80), justify="left").pack(side="left")
+
+    # ---- páginas
+
+    def welcome(self, notice: str = "") -> None:
+        verb = "Atualizar" if self.updating else "Instalar"
+        removal = [("Desinstalar", self.confirm_removal)] if self.updating else []
+        frame = self.page(f"{verb} o Siteblock", (verb, self.start), *removal, ("Cancelar", self.close))
+        if self.updating:
+            self.text(frame, "O Siteblock já está instalado neste computador. O assistente troca o programa "
+                             "pela versão desta pasta. Sua lista de sites e seus horários são mantidos.")
+        else:
+            self.text(frame, "O Siteblock bloqueia sites pelo arquivo hosts do Windows, com agenda por dia da "
+                             "semana e liberação temporária.")
+        self.text(frame, "O que o assistente faz:")
+        self.bullets(frame, [
+            f"Copia o programa para {APP_DIR}.",
+            "Cria duas tarefas que iniciam com o Windows: uma aplica os bloqueios no arquivo hosts "
+            "e a outra serve a tela do Siteblock.",
+            "Configura o Firefox para respeitar o bloqueio (desliga o DNS seguro e o HTTP/3).",
+            "Abre a tela do Siteblock no seu navegador quando terminar.",
+        ])
+        self.text(frame, f"Ao clicar em {verb}, o Windows pede a permissão de administrador. "
+                         "Ela é necessária para alterar o arquivo hosts.").pack_configure(pady=(self.px(6), self.px(8)))
+        if notice:
+            self.text(frame, notice, foreground=self.ALERT)
+
+    def confirm_removal(self, notice: str = "") -> None:
+        frame = self.page("Desinstalar o Siteblock",
+                          ("Desinstalar", lambda: self.start(removing=True)), ("Cancelar", self.close))
+        self.text(frame, "O assistente remove o Siteblock deste computador:")
+        self.bullets(frame, [
+            "Os bloqueios saem do arquivo hosts, e os sites da lista voltam a abrir.",
+            "As duas tarefas do Siteblock deixam de iniciar com o Windows.",
+            "O programa, o atalho no menu Iniciar e o comando siteblock são apagados.",
+            "As configurações que a instalação travou no Firefox são destravadas.",
+        ])
+        self.text(frame, f"Sua lista de sites e seus horários continuam em {CONFIG_DIR}, para o caso de você "
+                         "instalar de novo.").pack_configure(pady=(self.px(6), self.px(8)))
+        self.text(frame, "Ao clicar em Desinstalar, o Windows pede a permissão de administrador.")
+        if notice:
+            self.text(frame, notice, foreground=self.ALERT)
+
+    def start(self, removing: bool = False) -> None:
+        self.removing = removing
+        frame = self.page("Desinstalando…" if removing else "Atualizando…" if self.updating else "Instalando…")
+        self.status = self.text(frame, "Aguardando a permissão de administrador. Confirme o aviso do Windows.")
+        bar = self.ttk.Progressbar(frame, mode="indeterminate", length=self.px(self.WIDTH - 48))
+        bar.pack(anchor="w", pady=self.px(8))
+        bar.start(12)
+        self.busy, self.outcome, self.started = True, None, time.time()
+        arguments = ["uninstall", "--report"] if removing else ["install", "--user", self.user, "--report"]
+        window = int(self.root.wm_frame(), 16)  # o aviso do Windows abre na frente desta janela
+        threading.Thread(target=self.work, args=([self.script, *arguments], window), daemon=True).start()
+        self.root.after(150, self.poll)
+
+    def work(self, arguments: list[str], window: int) -> None:
+        """Fora da thread da janela: abre a operação como administrador e, ao instalar, espera a interface subir."""
+        try:
+            code = run_elevated(self.program, arguments, window)
+            self.outcome = (code, code == 0 and not self.removing and wait_for_interface(), "")
+        except OSError as error:
+            self.outcome = (1, False, str(error))
+
+    def poll(self) -> None:
+        log = read_install_log(self.started)
+        if self.outcome is None:
+            if log:
+                self.status.configure(text=log.splitlines()[-1])
+            self.root.after(150, self.poll)
+            return
+        self.busy = False
+        code, ready, error = self.outcome
+        if code is None and self.removing:
+            self.confirm_removal("A permissão de administrador não foi dada, então nada foi removido.")
+        elif code is None:
+            self.welcome("A permissão de administrador não foi dada, então nada foi instalado.")
+        elif code:
+            self.failed(log or error or f"O processo parou com o código {code}, sem informar o motivo.")
+        elif self.removing:
+            self.removed()
+        else:
+            self.done(ready)
+        self.root.lift()
+        self.root.focus_force()
+
+    def done(self, ready: bool) -> None:
+        import webbrowser
+
+        url = f"http://127.0.0.1:{PORT}/"
+        title = "O Siteblock foi atualizado" if self.updating else "O Siteblock está instalado"
+        self.updating = True
+        frame = self.page(title, ("Concluir", self.close), ("Abrir o Siteblock", lambda: webbrowser.open(url)))
+        if ready:
+            self.text(frame, f"A tela do Siteblock foi aberta no seu navegador. Ela fica em {url} "
+                             "e no menu Iniciar, com o nome Siteblock.")
+            self.root.after(300, lambda: webbrowser.open(url))  # depois de a página aparecer
+        else:
+            self.text(frame, f"A instalação terminou, mas a tela do Siteblock ainda não respondeu em {url}. "
+                             f"Tente abrir daqui a pouco. Se não abrir, veja {UI_LOG}.", foreground=self.ALERT)
+        self.text(frame, "Próximos passos:")
+        self.bullets(frame, [
+            "Se o Firefox estiver aberto, feche e abra de novo para ele respeitar o bloqueio.",
+            "Para usar o comando siteblock, abra um terminal novo.",
+            f"Opcional: para ver o timer dentro dos sites, carregue a extensão de {EXTENSION_DIR} em "
+            "chrome://extensions ou edge://extensions (Modo do desenvolvedor, Carregar sem compactação).",
+        ])
+
+    def removed(self) -> None:
+        self.updating = False
+        frame = self.page("O Siteblock foi removido", ("Concluir", self.close))
+        self.text(frame, "Os bloqueios saíram do arquivo hosts, e os sites da lista voltaram a abrir.")
+        if APP_DIR.exists():
+            self.text(frame, f"Não foi possível apagar tudo em {APP_DIR}. Apague essa pasta à mão.",
+                      foreground=self.ALERT)
+        self.text(frame, "Próximos passos:")
+        self.bullets(frame, [
+            "Se o Firefox estiver aberto, feche e abra de novo para ele voltar às configurações dele.",
+            "Se você carregou a extensão, remova-a na página de extensões do navegador.",
+        ])
+        self.text(frame, f"Sua lista continua em {CONFIG_DIR}, e a cópia do hosts original em "
+                         f"{HOSTS_BACKUP}.").pack_configure(pady=(self.px(6), self.px(8)))
+
+    def failed(self, details: str) -> None:
+        what = "desinstalação" if self.removing else "instalação"
+        frame = self.page(f"A {what} não foi concluída",
+                          ("Tentar de novo", lambda: self.start(self.removing)), ("Fechar", self.close))
+        self.text(frame, f"O que a {what} informou:")
+        box = self.tk.Text(frame, width=1, height=1, wrap="word", relief="solid", borderwidth=1,
+                           font=("Segoe UI", 9), padx=self.px(8), pady=self.px(6))
+        box.insert("1.0", details)
+        box.configure(state="disabled")  # só leitura; ainda dá para selecionar e copiar
+        box.pack(fill="both", expand=True)
 
 
 # --------------------------------------------------------------------- CLI
@@ -1886,9 +2285,17 @@ def build_parser() -> argparse.ArgumentParser:
     unblock.add_argument("minutes", type=int)
     commands.add_parser("block", help="encerra uma liberação temporária").add_argument("domain")
     commands.add_parser("extension", help="grava a extensão do navegador em uma pasta").add_argument("dir")
-    for name, text in (("enforce", "aplica a agenda (serviço root/SYSTEM)"), ("serve", "abre a interface"),
-                       ("install", "instala os serviços"), ("uninstall", "remove tudo")):
+    for name, text in (("enforce", "aplica a agenda (serviço root/SYSTEM)"), ("serve", "abre a interface")):
         commands.add_parser(name, help=text)
+    install_parser = commands.add_parser("install", help="instala os serviços")
+    uninstall_parser = commands.add_parser("uninstall", help="remove tudo")
+    # Usados pelo assistente ao abrir a instalação ou a remoção como administrador.
+    install_parser.add_argument("--user", help=argparse.SUPPRESS)
+    for command in (install_parser, uninstall_parser):
+        command.add_argument("--report", action="store_true", help=argparse.SUPPRESS)
+    setup_parser = commands.add_parser(
+        "setup", help="abre o assistente de instalação (Windows), que pede a permissão sozinho")
+    setup_parser.add_argument("--uninstall", action="store_true", help="abre o assistente para desinstalar")
     return parser
 
 
@@ -1904,9 +2311,11 @@ def main() -> None:
             log_to_file(UI_LOG)
             serve()
         elif command == "install":
-            install()
+            install(args.user, args.report)
+        elif command == "setup":
+            setup(args.uninstall)
         elif command == "uninstall":
-            uninstall()
+            uninstall(args.report)
         elif command == "list":
             print_list()
         elif command == "extension":
