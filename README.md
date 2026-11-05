@@ -2,6 +2,8 @@
 
 Bloqueia sites no Linux e no Windows pelo arquivo hosts do sistema, com agenda por dia da semana e liberação temporária de 1 a 15 minutos. Tudo roda localmente: uma interface no navegador (`http://127.0.0.1:8377`) e um comando `siteblock` no terminal.
 
+![Tela do Siteblock com quatro sites: um bloqueado o tempo todo, um bloqueado e em espera, um liberado pela agenda e um liberado por alguns minutos](docs/prints/lista.png)
+
 É um arquivo só, [siteblock.py](siteblock.py), sem dependências além do Python. O mesmo arquivo serve para os dois sistemas: ele reconhece onde está rodando e usa o mecanismo certo para bloquear. No Windows, o [instalar.cmd](windows-installer/instalar.cmd) só abre o assistente de instalação que está dentro do `siteblock.py`. O logo, [logo-block-site.jpg](logo-block-site.jpg), é opcional: se estiver na mesma pasta na hora da instalação, vira o ícone da aba (e, no Linux, do atalho no menu).
 
 ## O que ele faz
@@ -45,6 +47,12 @@ sudo python3 siteblock.py install
 1. A janela do assistente mostra o que vai ser feito. Clique em **Instalar**.
 2. O Windows pede a permissão de administrador. Confirme.
 3. Quando a instalação termina, a tela do Siteblock abre no seu navegador padrão.
+
+<img src="docs/prints/assistente-instalar.png" alt="Assistente de instalação: a primeira página lista o que vai ser feito e tem os botões Instalar e Cancelar" width="520">
+
+Ao terminar, o assistente mostra os próximos passos. **Abrir o Siteblock** abre a tela de novo e **Concluir** fecha a janela.
+
+<img src="docs/prints/assistente-concluido.png" alt="Assistente de instalação: a página final avisa que o Siteblock está instalado e lista os próximos passos" width="520">
 
 Antes de abrir a janela, o `instalar.cmd` verifica se o computador tem um Python que sirva. Se não tiver, ele pergunta se pode instalar. Com um **Sim**:
 
@@ -105,7 +113,12 @@ Para carregar no Chrome, Chromium ou Edge:
 Com ela, em um site da lista:
 
 - **Liberado, com bloqueio marcado para daqui a até 1 hora**: aparece uma janelinha no canto inferior direito com o tempo restante. Ela fica vermelha no último minuto e um clique a deixa menor. Quando o tempo acaba, a aba vai para a página de bloqueio.
+
+  ![Site aberto com a janelinha da extensão no canto inferior direito, mostrando que o youtube.com bloqueia em 7:40](docs/prints/extensao-timer.png)
+
 - **Bloqueado**: em vez do erro do navegador, aparece uma página com o motivo e, se houver espera, em quanto tempo o site pode ser liberado de novo. Quando o site é liberado, a página volta sozinha para o endereço que você tentou abrir.
+
+  ![Página da extensão no lugar do site: reddit.com está bloqueado até hoje às 18:00 e pode ser liberado de novo em 24:58](docs/prints/extensao-bloqueado.png)
 
 A extensão só lê o estado em `127.0.0.1:8377`; ela não libera nem bloqueia nada. O bloqueio continua no hosts, com ou sem ela. Ao atualizar o Siteblock, clique no botão de recarregar no cartão da extensão.
 
@@ -129,6 +142,8 @@ sudo siteblock uninstall
 
 Windows, pelo assistente: abra **Configurações > Aplicativos > Aplicativos instalados**, procure **Siteblock** e escolha **Desinstalar**. O assistente mostra o que vai ser removido e pede a permissão de administrador. Outros dois caminhos levam à mesma janela: o botão **Desinstalar** que aparece ao abrir o `instalar.cmd` com o Siteblock já instalado, e o comando `siteblock setup --uninstall`.
 
+<img src="docs/prints/assistente-desinstalar.png" alt="Assistente de desinstalação: lista o que vai ser removido e tem os botões Desinstalar e Cancelar" width="520">
+
 Windows, pelo terminal aberto como administrador:
 
 ```powershell
@@ -141,6 +156,49 @@ Isso remove os serviços, o atalho, o comando `siteblock`, a extensão, o bloco 
 |---|---|---|
 | Linux | `/var/lib/siteblock/` | `/etc/hosts.siteblock.bak` |
 | Windows | `C:\ProgramData\Siteblock\` | `C:\Windows\System32\drivers\etc\hosts.siteblock.bak` |
+
+## Uso pela interface
+
+Abra `http://127.0.0.1:8377` ou o atalho **Siteblock**. A tela é uma lista com uma linha por site.
+
+![Tela do Siteblock com o campo para adicionar um site e a lista de sites, cada um com o estado atual e os botões de ação](docs/prints/lista.png)
+
+### Adicionar um site
+
+Digite o endereço no campo do topo e clique em **Adicionar site** (ou aperte Enter). Dá pra colar a URL inteira. O site entra na lista **bloqueado o tempo todo**; para escolher os horários, veja [Definir os horários](#definir-os-horários).
+
+### Ler o estado de cada site
+
+Embaixo do endereço fica o estado atual. Na imagem acima:
+
+| Site | Estado | O que quer dizer |
+|---|---|---|
+| `instagram.com` | Bloqueado o tempo todo | A agenda bloqueia o site em todos os horários. |
+| `reddit.com` | Bloqueado até hoje às 18:00 | Está num horário bloqueado, que termina às 18:00. À direita, **Nova liberação em 24:59** é a espera depois de uma liberação. |
+| `twitch.tv` | Liberado até hoje às 14:00 | Está fora dos horários bloqueados; o próximo começa às 14:00. |
+| `youtube.com` | Liberado por mais 7:44 | Foi liberado por alguns minutos, e o bloqueio volta quando o contador zerar. |
+
+### Liberar por alguns minutos
+
+1. Na linha do site, arraste o controle deslizante para escolher de 1 a 15 minutos. O botão ao lado mostra o valor escolhido.
+2. Clique em **Liberar por N min**. O estado passa a ser **Liberado por mais…**, com um contador.
+3. Para encerrar antes do fim, clique em **Bloquear agora**. Se a agenda já deixa o site livre naquele horário, o botão aparece como **Encerrar liberação**.
+
+Quando a liberação acaba, o controle e o botão dão lugar a **Nova liberação em…**, com o tempo que falta para você poder liberar o site de novo. Eles voltam quando essa espera termina.
+
+### Definir os horários
+
+Clique em **Editar** na linha do site. As faixas coloridas são os horários **bloqueados** de cada dia.
+
+![Editor de um site: campo com o endereço, atalhos de agenda e uma barra por dia da semana com os horários bloqueados pintados](docs/prints/agenda.png)
+
+- **Arrastar na barra do dia** pinta ou apaga horários, de 15 em 15 minutos. Se você começar num trecho livre, pinta; se começar num trecho bloqueado, apaga.
+- **Digitar no campo à direita** também funciona: `08:00-18:00`, ou mais de um intervalo separado por vírgula, como `09:00-12:00, 14:00-18:00`. Campo vazio é dia livre.
+- **Atalhos** preenchem a semana inteira de uma vez: **Bloquear sempre**, **Liberar o fim de semana** (bloqueia de segunda a sexta o dia todo), **Bloquear seg a sex, 8h às 18h** e **Limpar** (nenhum horário bloqueado).
+- O risco vertical na barra de hoje marca a hora atual.
+- **Endereço do site** troca o domínio sem perder a agenda.
+
+Nada muda até você clicar em **Salvar**. **Cancelar** fecha o editor sem alterar a agenda, e **Remover site** tira o site da lista depois de uma confirmação.
 
 ## Uso pelo terminal
 
