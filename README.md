@@ -124,6 +124,10 @@ Com ela, em um site da lista:
 
   ![Página da extensão no lugar do site: reddit.com está bloqueado até hoje às 18:00 e pode ser liberado de novo em 24:58](docs/prints/extensao-bloqueado.png)
 
+  Sem espera, a página avisa que o site já pode ser liberado. Na hora da liberação, ela mostra **Liberado** antes de voltar para o site.
+
+  <img src="docs/prints/extensao-bloqueado-sem-espera.png" alt="Página da extensão: instagram.com está bloqueado o tempo todo e já pode ser liberado no Siteblock" width="400"> <img src="docs/prints/extensao-liberado.png" alt="Página da extensão logo após a liberação: mostra Liberado e Abrindo o site" width="400">
+
 A extensão só lê o estado em `127.0.0.1:8377`; ela não libera nem bloqueia nada. O bloqueio continua no hosts, com ou sem ela. Ao atualizar o Siteblock, clique no botão de recarregar no cartão da extensão.
 
 Para gravar a extensão em outra pasta: `siteblock extension ~/siteblock-extensao`.
