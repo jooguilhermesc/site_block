@@ -802,7 +802,8 @@ button.danger{border-color:var(--blocked);color:var(--blocked)}
 #empty{color:var(--muted);padding:24px 0;border-top:1px solid var(--line)}
 .site{border-top:1px solid var(--line);padding:16px 0}
 .summary{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:8px 24px;align-items:center}
-.name{font-size:1.25rem;font-weight:700;overflow-wrap:anywhere}
+.name{display:block;width:fit-content;max-width:100%;font-size:1.25rem;font-weight:700;overflow-wrap:anywhere;color:inherit;text-decoration:none}
+.name:hover{text-decoration:underline}
 .status{color:var(--muted)}
 .status.blocked{color:var(--blocked);font-weight:600}
 .status.open{color:var(--open);font-weight:600}
@@ -857,7 +858,7 @@ input[type=range]{width:120px;accent-color:var(--blocked)}
 <template id="row">
   <section class="site">
     <div class="summary">
-      <div><div class="name"></div><div class="status" aria-live="polite"></div></div>
+      <div><a class="name" target="_blank" rel="noopener noreferrer"></a><div class="status" aria-live="polite"></div></div>
       <div class="actions">
         <span class="wait" hidden></span>
         <input type="range" step="1" value="5" aria-label="Minutos de liberação">
@@ -1025,6 +1026,8 @@ function createRow(site){
     unblock:node.querySelector(".unblock"),lock:node.querySelector(".lock"),edit:node.querySelector(".edit"),
     manual:node.querySelector(".manual"),editor:node.querySelector(".editor")};
   row.name.textContent=site.domain;
+  row.name.href="https://"+site.domain+"/";
+  row.name.title="Abrir "+site.domain+" numa aba nova";
   row.range.min=limits.min;row.range.max=limits.max;
   const label=()=>{row.unblock.textContent="Liberar por "+row.range.value+" min"};
   row.range.oninput=label;label();
