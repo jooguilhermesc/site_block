@@ -167,7 +167,7 @@ Isso remove os serviços, o atalho, o comando `siteblock`, a extensão, o bloco 
 
 ## Uso pela interface
 
-Abra `http://127.0.0.1:8377` ou o atalho **Siteblock**. A tela é uma lista com uma linha por site.
+Abra `http://127.0.0.1:8377` ou o atalho **Siteblock**. A tela é uma lista com uma linha por site. Clicar no nome de um site abre ele numa aba nova, o que ajuda logo depois de liberar.
 
 ![Tela do Siteblock com o campo para adicionar um site e a lista de sites, cada um com o estado atual e os botões de ação](docs/prints/lista.png)
 
